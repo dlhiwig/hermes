@@ -1,0 +1,27 @@
+[Unit]
+Description=Hermes SONA Daemon — Self-Optimizing Neural Architecture
+Documentation=https://github.com/dlhiwig/hermes
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=toba
+WorkingDirectory=/home/toba/hermes
+Environment=NODE_ENV=production
+Environment=SONA_PORT=18804
+EnvironmentFile=-/home/toba/hermes/.env
+ExecStart=/usr/bin/node --loader tsx src/brain/sona.ts
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hermes-sona
+
+# Kill switch enforcement via resource limits
+LimitNOFILE=65536
+MemoryMax=2G
+CPUQuota=200%
+
+[Install]
+WantedBy=multi-user.target

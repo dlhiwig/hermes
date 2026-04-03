@@ -1,0 +1,16 @@
+[package]
+name = "skynet-runtime"
+version = "0.1.0"
+edition = "2021"
+description = "Hermes critical-path Rust runtime — zero-copy GNN ops, proof engine, EWC++ integration"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+blake3 = "1"
+anyhow = "1"
+
+[lib]
+name = "skynet_runtime"
+crate-type = ["cdylib", "rlib"]  # cdylib for Node.js FFI via napi-rs

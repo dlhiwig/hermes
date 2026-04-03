@@ -1,0 +1,27 @@
+{
+  "name": "hermes",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/main.ts",
+    "build": "tsc --project tsconfig.json",
+    "start": "node dist/main.js",
+    "loop:run": "tsx src/core/loop.ts",
+    "sona:daemon": "tsx src/brain/sona.ts"
+  },
+  "dependencies": {
+    "ruvector": "^0.1.0",
+    "@ruvector/sona": "^0.1.0",
+    "typescript": "^5.4.5",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "tsx": "^4.15.0",
+    "vitest": "^1.6.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

@@ -1,0 +1,56 @@
+# Hermes Configuration
+# NOTE: Kill switches are INFORMATIONAL ONLY.
+# Actual enforced values are hard-coded in src/core/loop.ts.
+
+[meta]
+name = "hermes"
+version = "0.1.0"
+
+[kill_switches]
+max_recursion_depth = 5
+max_concurrent_agents = 10
+spend_gate_usd = 50
+max_loop_iterations_per_hour = 1000
+
+[sona]
+port = 18804
+optimize_interval_ms = 5000
+gnn_update_interval_ms = 30000
+
+[sona.ewc]
+lambda = 0.4
+fisher_samples = 200
+mode = "online"
+importance_decay = 0.95
+per_layer_scaling = true
+task_buffer_size = 512
+micro_lora_rank = 2
+base_lora_rank = 8
+
+[skills]
+distill_success_threshold = 0.85
+distill_min_samples = 10
+spawn_agent_threshold = 0.92
+
+[governance]
+superclaw_endpoint = "http://localhost:9090"
+pii_detection_enabled = true
+injection_detection_enabled = true
+
+[[agents]]
+id = "alpha"
+name = "Alpha"
+endpoint = "http://localhost:18791"
+capabilities = ["coding", "research"]
+
+[[agents]]
+id = "bravo"
+name = "Bravo"
+endpoint = "http://localhost:18792"
+capabilities = ["analysis", "review"]
+
+[[agents]]
+id = "charlie"
+name = "Charlie"
+endpoint = "http://localhost:18793"
+capabilities = ["memory", "research"]
