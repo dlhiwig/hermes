@@ -10,6 +10,7 @@
  */
 
 import type { Trajectory, RewardSignal, HermesTask, HermesPlan, RoutingRecommendation } from "../core/loop.js";
+import { EWCPlusPlus } from "./ewc.js";
 
 const SONA_PORT = parseInt(process.env["SONA_PORT"] ?? "18804", 10);
 const SONA_OPTIMIZE_INTERVAL_MS = 5_000; // every 5 seconds
@@ -60,10 +61,12 @@ export class SonaDaemon {
   private trajectoryBuffer: TrajectoryRecord[];
   private optimizeTimer: NodeJS.Timeout | null = null;
   private gnnUpdateTimer: NodeJS.Timeout | null = null;
+  private ewc: EWCPlusPlus;
 
   constructor() {
     this.port = SONA_PORT;
     this.trajectoryBuffer = [];
+    this.ewc = new EWCPlusPlus({ lambda: 0.4, importanceDecay: 0.95 });
 
     this.routingTable = {
       version: 0,
@@ -133,6 +136,13 @@ export class SonaDaemon {
     };
 
     this.trajectoryBuffer.push(record);
+
+    // Build a simple gradient map from the reward signal and apply Micro-LoRA
+    const gradients = new Map<string, number>([
+      ["routing_weight", reward.score],
+      ["task_success", reward.score],
+    ]);
+    this.ewc.applyMicroLora(gradients, reward.score);
 
     // TODO: POST to SONA HTTP API or call @ruvector/sona directly
     // await fetch(`http://localhost:${this.port}/trajectory`, {
@@ -230,6 +240,14 @@ export class SonaDaemon {
     // TODO: Bayesian optimization or simple hill-climbing over this.hyperparams
     console.log("[SONA] autoTuneHyperparams — stub");
     return this.hyperparams;
+  }
+
+  /**
+   * Feed a governance violation into EWC++ to lock weights harder on flagged params.
+   * Called from SuperClaw Step 7 when a trajectory is flagged.
+   */
+  applyGovernancePenalty(paramId: string, negativeReward: number): void {
+    this.ewc.applyGovernancePenalty(paramId, negativeReward);
   }
 
   getRoutingTable(): RoutingTable {
