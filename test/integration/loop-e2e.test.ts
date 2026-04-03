@@ -72,9 +72,10 @@ const fetchMock = vi.fn().mockImplementation(async (url: string) => {
 });
 vi.stubGlobal("fetch", fetchMock);
 
-// Now import the loop (after mocks are in place)
+// Now import the loop and VoltAgent (after mocks are in place)
 const { HermesLoop } = await import("../../src/core/loop.js");
 import type { HermesTask, Trajectory } from "../../src/core/loop.js";
+const { VoltAgentExecutor, VOLT_AGENT_ROLES } = await import("../../src/skills/voltAgent.js");
 
 describe("HermesLoop end-to-end", () => {
   let loop: InstanceType<typeof HermesLoop>;
@@ -184,6 +185,67 @@ describe("HermesLoop end-to-end", () => {
       expect(result.stepId).toBeTruthy();
       expect(typeof result.success).toBe("boolean");
     }
+  });
+
+  it("voltAgent executor uses Ollama for financial tasks", async () => {
+    // Override fetch mock to return a valid Ollama response for this test
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (typeof url === "string" && url.includes("11434")) {
+        const body = init?.body ? JSON.parse(String(init.body)) : {};
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            message: {
+              content: `Analyzed: ${body.messages?.[1]?.content ?? "task"}. Category: expense, amount: $42.00`,
+            },
+          }),
+          text: async () => "ok",
+        };
+      }
+      if (typeof url === "string" && url.includes("18800")) {
+        return { ok: false, status: 503, text: async () => "mock: superclaw unavailable" };
+      }
+      return { ok: false, status: 404, text: async () => "not found" };
+    });
+
+    const task: HermesTask = {
+      id: randomUUID(),
+      input: "Categorize this transaction: $42.00 at Grocery Store on 2026-03-15",
+      source: "api",
+      recursionDepth: 0,
+      submittedAt: new Date(),
+    };
+
+    const trajectory = await loop.run(task);
+
+    // The loop should have completed with the voltAgent executor
+    expect(trajectory).toBeDefined();
+    expect(trajectory.taskId).toBe(task.id);
+
+    // Verify Ollama was called at the VoltAgent endpoint
+    const ollamaCalls = fetchMock.mock.calls.filter(
+      (call: unknown[]) => typeof call[0] === "string" && (call[0] as string).includes("11434"),
+    );
+    expect(ollamaCalls.length).toBeGreaterThan(0);
+
+    // Verify execution results contain VoltAgent output
+    const voltResult = trajectory.executionResults.find(
+      (r) => typeof r.output === "string" && r.output.includes("Analyzed"),
+    );
+    expect(voltResult).toBeDefined();
+    expect(voltResult!.success).toBe(true);
+
+    // Restore default fetch mock
+    fetchMock.mockImplementation(async (url: string) => {
+      if (typeof url === "string" && url.includes("ollama")) {
+        return { ok: false, status: 503, text: async () => "mock: ollama unavailable" };
+      }
+      if (typeof url === "string" && url.includes("18800")) {
+        return { ok: false, status: 503, text: async () => "mock: superclaw unavailable" };
+      }
+      return { ok: false, status: 404, text: async () => "not found" };
+    });
   });
 
   it("enforces kill switch on excessive recursion depth", async () => {

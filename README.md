@@ -1,3 +1,5 @@
+[![CI](https://github.com/dlhiwig/hermes/actions/workflows/ci.yml/badge.svg)](https://github.com/dlhiwig/hermes/actions/workflows/ci.yml)
+
 # Hermes
 
 Hermes is a recursive self-learning orchestrator that routes tasks through an 8-step loop of retrieval, planning, governance, execution, optimization, and skill distillation. It combines a GNN-based routing optimizer (SONA), anti-forgetting mechanisms (EWC++), and automatic skill evolution to continuously improve its own task-solving capabilities while enforcing hard-coded safety kill switches.
@@ -141,7 +143,7 @@ data/             Governance audit logs, test trajectories
 
 ## Current Status
 
-**Phase 5 complete.** The 8-step recursive loop runs end-to-end with:
+**Phase 9 complete.** The 8-step recursive loop runs end-to-end with:
 
 - Full loop orchestration with kill switch enforcement
 - SONA GNN optimization with Micro-LoRA and EWC++ anti-forgetting
