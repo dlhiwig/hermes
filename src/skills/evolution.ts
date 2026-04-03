@@ -13,9 +13,13 @@
 
 import * as fs from "fs/promises";
 import * as path from "path";
+import { execFile } from "child_process";
+import { promisify } from "util";
 import { HermesMemory } from "../brain/ruvector.js";
 import { ReasoningBank } from "../core/reasoning-bank.js";
 import type { Trajectory, SkillCandidate } from "../core/loop.js";
+
+const execFileAsync = promisify(execFile);
 
 const DISTILL_SUCCESS_RATE = 0.85;
 const DISTILL_MIN_SAMPLES = 10;
@@ -42,6 +46,7 @@ export interface RVFSkillManifest {
   createdAt: string;
   rvfContainerPath: string;
   skillMdPath: string;
+  permanentAgentId?: string;
 }
 
 // ── SkillEvolution ────────────────────────────────────────────────────────────
@@ -113,13 +118,61 @@ export class SkillEvolution {
       return null;
     }
 
-    return {
+    const candidate: SkillCandidate = {
       pattern,
       successRate: metrics.successRate,
       sampleTrajectories: metrics.trajectoryIds.slice(-20),
       proposedSkillName: this.deriveSkillName(pattern),
       proposedExecutor: this.selectBestExecutor(metrics),
     };
+
+    // Distill to SKILL.md + RVF manifest when threshold met
+    if (metrics.successRate >= DISTILL_SUCCESS_RATE) {
+      const distilled = await this.reasoningBank.distillToSkill(pattern, trajectory);
+      if (distilled) {
+        const skillName = this.deriveSkillName(pattern);
+        const skillDir = path.join(SKILLS_DIR, "auto", skillName);
+        await fs.mkdir(skillDir, { recursive: true });
+
+        const manifest: RVFSkillManifest = {
+          id: `skill_${skillName}_${Date.now()}`,
+          name: skillName,
+          pattern,
+          executor: this.selectBestExecutor(metrics),
+          successRate: metrics.successRate,
+          createdAt: new Date().toISOString(),
+          rvfContainerPath: path.join(skillDir, `${skillName}.rvf.json`),
+          skillMdPath: path.join(skillDir, "SKILL.md"),
+        };
+
+        await fs.writeFile(
+          path.join(skillDir, "rvf-manifest.json"),
+          JSON.stringify(manifest, null, 2),
+          "utf-8"
+        );
+
+        console.log(
+          `[SkillEvolution] Distilled new skill: ${skillName} (successRate=${metrics.successRate.toFixed(2)}, samples=${metrics.totalSamples})`
+        );
+
+        // Spawn permanent agent at 95% threshold
+        if (metrics.successRate >= SPAWN_AGENT_SUCCESS_RATE) {
+          try {
+            const agentId = await this.spawnPermanentAgent(skillName, pattern);
+            manifest.permanentAgentId = agentId;
+            await fs.writeFile(
+              path.join(skillDir, "rvf-manifest.json"),
+              JSON.stringify(manifest, null, 2),
+              "utf-8"
+            );
+          } catch (err) {
+            console.error(`[SkillEvolution] Failed to spawn agent for ${skillName}:`, err);
+          }
+        }
+      }
+    }
+
+    return candidate;
   }
 
   // ── Threshold Checks ──────────────────────────────────────────────────────
@@ -203,18 +256,34 @@ export class SkillEvolution {
   /**
    * Spawn a permanent sub-agent via ruflo for patterns with >95% success rate.
    */
-  async spawnPermanentAgent(skillName: string): Promise<string> {
-    // TODO: Call ruflo to register a permanent agent role
-    // const ruflo = new RufloClient({ apiKey: process.env.RUFLO_API_KEY });
-    // const agent = await ruflo.registerPermanentAgent({
-    //   role: skillName,
-    //   skillPath: path.join(SKILLS_DIR, skillName),
-    // });
-    // return agent.agentId;
+  async spawnPermanentAgent(skillName: string, pattern: string): Promise<string> {
+    const agentId = `${skillName}-agent`;
+    console.log(`[SkillEvolution] Spawning permanent agent — id=${agentId} role=${pattern.slice(0, 40)}`);
 
-    const agentId = `permanent_${skillName}_${Date.now()}`;
-    console.log(`[SkillEvolution] Spawning permanent agent — skill=${skillName} agentId=${agentId}`);
+    try {
+      const { stdout, stderr } = await execFileAsync("ruflo", [
+        "agent", "spawn",
+        "--id", agentId,
+        "--role", pattern,
+      ]);
+      if (stdout) console.log(`[SkillEvolution] ruflo spawn stdout: ${stdout.trim()}`);
+      if (stderr) console.warn(`[SkillEvolution] ruflo spawn stderr: ${stderr.trim()}`);
+    } catch (err) {
+      // ruflo may not be installed or reachable — log but don't crash
+      console.warn(`[SkillEvolution] ruflo spawn failed (non-fatal):`, (err as Error).message);
+    }
+
     return agentId;
+  }
+
+  /**
+   * Return the top N patterns by successRate with at least minSamples.
+   */
+  getTopPatterns(n: number, minSamples = 5): PatternMetrics[] {
+    return Array.from(this.patternMetrics.values())
+      .filter((m) => m.totalSamples >= minSamples)
+      .sort((a, b) => b.successRate - a.successRate)
+      .slice(0, n);
   }
 
   // ── Helpers ───────────────────────────────────────────────────────────────
