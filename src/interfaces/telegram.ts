@@ -15,8 +15,9 @@ import { SkillEvolution } from "../skills/evolution.js";
 import { HermesMemory } from "../brain/ruvector.js";
 import { randomUUID } from "crypto";
 
-const BOT_TOKEN = "REDACTED_OLD_TOKEN";
-const DANIEL_CHAT_ID = 938702109;
+const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+if (!BOT_TOKEN) throw new Error("TELEGRAM_BOT_TOKEN env var is required");
+const DANIEL_CHAT_ID = Number(process.env.TELEGRAM_DANIEL_CHAT_ID ?? "938702109");
 const API_BASE = `https://api.telegram.org/bot${BOT_TOKEN}`;
 const POLL_INTERVAL_MS = 2000;
 
