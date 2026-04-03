@@ -10,6 +10,8 @@
  * usage without manual coding.
  */
 
+import * as fs from "fs/promises";
+import * as path from "path";
 import type { Trajectory, SkillCandidate } from "./loop.js";
 
 export const DISTILL_SUCCESS_THRESHOLD = 0.85;   // 85% reward over N runs
@@ -100,8 +102,8 @@ export class ReasoningBank {
   }
 
   /**
-   * Distill a pattern into a SKILL.md + RVF container.
-   * The skill is immediately available for future routing.
+   * Distill a pattern into a Superpowers-format SKILL.md + RVF container.
+   * Writes to skills/auto/<skillName>/SKILL.md and is immediately available for routing.
    */
   async distillToSkill(
     taskPattern: string,
@@ -113,20 +115,20 @@ export class ReasoningBank {
     const skillName = this.toSkillName(taskPattern);
     const skillMd = this.generateSkillMd(skillName, p, representativeTrajectory);
 
-    // TODO: Write SKILL.md to skills/auto/<skillName>/SKILL.md
-    // const fs = await import("fs/promises");
-    // await fs.mkdir(`${this.skillsDir}/${skillName}`, { recursive: true });
-    // await fs.writeFile(`${this.skillsDir}/${skillName}/SKILL.md`, skillMd);
+    // Write SKILL.md to skills/auto/<skillName>/SKILL.md
+    const skillDir = path.join(this.skillsDir, skillName);
+    await fs.mkdir(skillDir, { recursive: true });
+    await fs.writeFile(path.join(skillDir, "SKILL.md"), skillMd);
 
     // TODO: Package as RVF container (npx ruvector pack <skillName>)
-    const rvfPath = `${this.skillsDir}/${skillName}/${skillName}.rvf`;
+    const rvfPath = path.join(skillDir, `${skillName}.rvf`);
 
     p.rvfContainerPath = rvfPath;
     p.lastUpdatedAt = new Date();
     this.patterns.set(taskPattern, p);
 
     console.log(`[ReasoningBank] Distilled skill: ${skillName} (successRate=${p.successRate.toFixed(3)})`);
-    console.log(`[ReasoningBank] SKILL.md stub:\n${skillMd.slice(0, 200)}...`);
+    console.log(`[ReasoningBank] Wrote SKILL.md → ${path.join(skillDir, "SKILL.md")}`);
 
     return p;
   }

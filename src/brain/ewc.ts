@@ -265,4 +265,29 @@ export class EWCPlusPlus {
   getConfig(): EWCConfig { return this.config; }
   getFisherEstimates(): Map<string, FisherEstimate> { return this.fisherEstimates; }
   getTaskAge(): number { return this.taskAge; }
+
+  // ── LoRA Layer Registry ────────────────────────────────────────────────────
+
+  registerLoRALayer(layerId: string, rank: number, _inputDim: number, _outputDim: number): void {
+    console.log(`[EWC++] Registered LoRA layer: ${layerId} rank=${rank}`);
+  }
+
+  getAdaptedRouter(taskPattern: string): { layerId: string; suggestedExecutor: string; confidence: number; fisherImportance: number } | null {
+    let best: { paramId: string; importance: number } | null = null;
+    for (const [paramId, est] of this.fisherEstimates) {
+      if (paramId.includes(taskPattern.slice(0, 8))) {
+        if (!best || est.importance > best.importance) {
+          best = { paramId, importance: est.importance };
+        }
+      }
+    }
+    if (!best) return null;
+    const executorMap: Record<string, string> = {
+      "routing-accuracy": "voltAgent", "routing-latency": "skynetRust",
+      "routing-cost": "voltAgent", "executor-selection": "ruflo", "task-pattern": "deerFlow",
+    };
+    const layerId = best.paramId.split(":")[0] ?? "routing-accuracy";
+    return { layerId, suggestedExecutor: executorMap[layerId] ?? "voltAgent", confidence: Math.min(best.importance, 1.0), fisherImportance: best.importance };
+  }
+
 }

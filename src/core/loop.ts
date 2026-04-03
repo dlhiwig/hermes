@@ -8,6 +8,7 @@
  *   MAX_LOOP_ITERATIONS_PER_HOUR = 1000
  */
 
+import { SonaEngine } from "@ruvector/sona";
 import { HermesMemory } from "../brain/ruvector.js";
 import { SonaDaemon } from "../brain/sona.js";
 import { HermesPlanner } from "../orchestration/planner.js";
@@ -134,6 +135,7 @@ export interface LoopMetrics {
 export class HermesLoop {
   private memory: HermesMemory;
   private sona: SonaDaemon;
+  private sonaEngine: SonaEngine;
   private planner: HermesPlanner;
   private governance: SuperClawGovernance;
   private skillEvolution: SkillEvolution;
@@ -142,6 +144,7 @@ export class HermesLoop {
   constructor() {
     this.memory = new HermesMemory();
     this.sona = new SonaDaemon();
+    this.sonaEngine = new SonaEngine(256);
     this.planner = new HermesPlanner();
     this.governance = new SuperClawGovernance();
     this.skillEvolution = new SkillEvolution(this.memory);
@@ -183,18 +186,43 @@ export class HermesLoop {
     // ── Step 2.5: PRE-EXECUTION GOVERNANCE CHECK ──────────────────────────
     ctx.governancePre = await this.step2_5_preExecutionGovernance(ctx.plan, ctx);
     if (ctx.governancePre.decision === "reject") {
+      // End a zero-reward trajectory so Fisher estimates don't go stale
+      const rejectEmb = this.taskToEmbedding(task);
+      const rejectTrajId = this.sonaEngine.beginTrajectory(rejectEmb);
+      this.sonaEngine.endTrajectory(rejectTrajId, 0);
       return this.abortTrajectory(ctx, `Governance pre-check rejected: ${ctx.governancePre.reason}`);
     }
     if (ctx.governancePre.decision === "escalate") {
       await this.humanEscalation(ctx, "pre-execution");
     }
 
-    // ── Step 3: Execution ─────────────────────────────────────────────────
-    ctx.executionResults = await this.step3_execution(ctx.plan!, ctx);
-    ctx.spendAccumulated = ctx.executionResults.reduce((_acc, _r) => _acc, 0); // TODO: sum actual cost
+    // ── Step 3: Execution (with Convoy trajectory tracking) ────────────────
+    const trajEmbedding = this.taskToEmbedding(task);
+    const trajId = this.sonaEngine.beginTrajectory(trajEmbedding);
+
+    try {
+      ctx.executionResults = await this.step3_execution(ctx.plan!, ctx);
+      ctx.spendAccumulated = ctx.executionResults.reduce((_acc, _r) => _acc, 0); // TODO: sum actual cost
+
+      // Record each execution result as a trajectory step
+      for (const result of ctx.executionResults) {
+        const stepEmb = this.taskToEmbedding({ ...task, input: `${task.input}:step:${result.stepId}` });
+        const actions: number[] = [result.success ? 1.0 : 0.0];
+        const stepReward = result.success ? 0.8 : 0.0;
+        this.sonaEngine.addTrajectoryStep(trajId, stepEmb, actions, stepReward);
+      }
+    } catch (err) {
+      // End trajectory with zero reward on error so Fisher estimates don't go stale
+      this.sonaEngine.endTrajectory(trajId, 0);
+      throw err;
+    }
 
     // ── Step 4: Observation & Logging ─────────────────────────────────────
     ctx.trajectory = await this.step4_observationAndLogging(ctx);
+
+    // End trajectory with the computed reward signal
+    const finalReward = ctx.trajectory.rewardSignal?.score ?? 0;
+    this.sonaEngine.endTrajectory(trajId, finalReward);
 
     // ── Step 5: SONA Optimization ─────────────────────────────────────────
     await this.step5_sonaOptimization(ctx.trajectory);
@@ -451,6 +479,30 @@ export class HermesLoop {
       taskPattern: ctx.task.input.slice(0, 64),
       labels: [ctx.task.source],
     };
+  }
+
+  /**
+   * Convert a task to a 256-dim embedding for SONA trajectory tracking.
+   * Simple hash-based approach matching LedgerSkill's pattern.
+   */
+  private taskToEmbedding(task: HermesTask): number[] {
+    const input = `${task.id}:${task.source}:${task.input}`;
+    const dim = 256;
+    const emb = new Array(dim).fill(0) as number[];
+    for (let i = 0; i < input.length; i++) {
+      const code = input.charCodeAt(i);
+      const idx = (code * 31 + i * 17) % dim;
+      emb[idx] = (emb[idx] ?? 0) + ((code * 0.0073) % 1.0);
+    }
+    let norm = 0;
+    for (let i = 0; i < dim; i++) {
+      norm += (emb[i] ?? 0) * (emb[i] ?? 0);
+    }
+    norm = Math.sqrt(norm) || 1;
+    for (let i = 0; i < dim; i++) {
+      emb[i] = (emb[i] ?? 0) / norm;
+    }
+    return emb;
   }
 
   private abortTrajectory(ctx: HermesContext, reason: string): Trajectory {
