@@ -8,6 +8,7 @@
     "build": "tsc --project tsconfig.json",
     "start": "node dist/main.js",
     "loop:run": "tsx src/core/loop.ts",
+    "loop:test": "tsx scripts/run-one-loop.ts",
     "sona:daemon": "tsx src/brain/sona.ts",
     "ledger:run": "tsx src/skills/ledger.ts",
     "test": "vitest run"
