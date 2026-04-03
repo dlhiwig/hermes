@@ -151,4 +151,26 @@ mod tests {
         assert!(proof_validate(&hash, "step-1", "skynetRust"));
         assert!(!proof_validate(&hash, "step-1", "voltAgent"));
     }
+
+    #[test]
+    fn test_ewc_zero_reward_no_penalty() {
+        let steps = vec![
+            TrajectoryStep { param_id: "w1".into(), gradient: 0.8, reward: 0.0 },
+            TrajectoryStep { param_id: "w2".into(), gradient: -0.5, reward: 0.0 },
+        ];
+        let result = ewc_record_step(&steps, 0.4, 0.95);
+        assert_eq!(result.total_penalty, 0.0);
+    }
+
+    #[test]
+    fn test_gnn_no_increment_low_reward() {
+        let new_version = gnn_update_weights(0.3, 5);
+        assert_eq!(new_version, 5);
+    }
+
+    #[test]
+    fn test_proof_wrong_executor_fails() {
+        let hash = generate_proof_hash("step-1", "skynetRust");
+        assert!(!proof_validate(&hash, "step-1", "voltAgent"));
+    }
 }
