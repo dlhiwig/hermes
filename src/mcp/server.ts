@@ -15,6 +15,7 @@ import * as path from "node:path";
 import { HermesLoop } from "../core/loop.js";
 import type { HermesTask } from "../core/loop.js";
 import { LedgerSkill } from "../skills/ledger.js";
+import { getMetricsSummary } from "../observability/metrics.js";
 
 const MCP_PORT = parseInt(process.env["HERMES_MCP_PORT"] ?? "18806", 10);
 
@@ -212,6 +213,13 @@ export function startMcpServer(loop: HermesLoop): ReturnType<typeof createServer
 
   const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
     res.setHeader("Content-Type", "application/json");
+
+    // GET /metrics
+    if (req.method === "GET" && req.url === "/metrics") {
+      res.writeHead(200);
+      res.end(JSON.stringify(getMetricsSummary()));
+      return;
+    }
 
     // GET /tools/list
     if (req.method === "GET" && req.url === "/tools/list") {
