@@ -11,6 +11,7 @@
     "loop:test": "tsx scripts/run-one-loop.ts",
     "sona:daemon": "tsx src/brain/sona.ts",
     "ledger:run": "tsx src/skills/ledger.ts",
+    "demo:multi": "tsx scripts/multi-turn-demo.ts",
     "test": "vitest run"
   },
   "dependencies": {
