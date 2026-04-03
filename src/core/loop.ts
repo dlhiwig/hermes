@@ -15,6 +15,7 @@ import { HermesPlanner } from "../orchestration/planner.js";
 import { SuperClawGovernance } from "../governance/superclaw.js";
 import { SkillEvolution } from "../skills/evolution.js";
 import { VoltAgentExecutor, VOLT_AGENT_ROLES } from "../skills/voltAgent.js";
+import { recordTask } from "../observability/metrics.js";
 
 // ── Kill Switches ─────────────────────────────────────────────────────────────
 
@@ -132,6 +133,23 @@ export interface LoopMetrics {
   activeAgents: number;
 }
 
+// ── Step Timeout ─────────────────────────────────────────────────────────────
+
+const STEP_TIMEOUT_MS = 30_000;
+
+function withTimeout<T>(promise: Promise<T>, stepName: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error(`[Timeout] ${stepName} exceeded ${STEP_TIMEOUT_MS}ms`)),
+      STEP_TIMEOUT_MS,
+    );
+    promise.then(
+      (v) => { clearTimeout(timer); resolve(v); },
+      (e) => { clearTimeout(timer); reject(e); },
+    );
+  });
+}
+
 // ── HermesLoop ────────────────────────────────────────────────────────────────
 
 export class HermesLoop {
@@ -180,17 +198,32 @@ export class HermesLoop {
 
     console.log(`[Hermes] Starting task ${task.id} (depth=${task.recursionDepth})`);
 
-    // ── Step 1: Input & Retrieval ──────────────────────────────────────────
-    ctx.retrieved = await this.step1_inputAndRetrieval(task);
+    // ── Step 1: Input & Retrieval (non-fatal — continue with empty context) ──
+    try {
+      ctx.retrieved = await withTimeout(this.step1_inputAndRetrieval(task), "Step 1: Retrieval");
+    } catch (err) {
+      console.warn(`[Hermes] Step 1 (Retrieval) failed: ${err instanceof Error ? err.message : err}`);
+      ctx.retrieved = [];
+    }
 
-    // ── Step 2: Planning ──────────────────────────────────────────────────
-    ctx.plan = await this.step2_planning(task, ctx.retrieved);
-    ctx.sonaRecommendation = await this.sona.getRoutingRecommendation(task, ctx.plan);
+    // ── Step 2: Planning (fatal — abort with failed trajectory) ──────────────
+    try {
+      ctx.plan = await withTimeout(this.step2_planning(task, ctx.retrieved), "Step 2: Planning");
+      ctx.sonaRecommendation = await withTimeout(
+        this.sona.getRoutingRecommendation(task, ctx.plan),
+        "Step 2: SONA Routing",
+      );
+    } catch (err) {
+      console.error(`[Hermes] Step 2 (Planning) failed: ${err instanceof Error ? err.message : err}`);
+      return this.abortTrajectory(ctx, `Planning failed: ${err instanceof Error ? err.message : err}`);
+    }
 
     // ── Step 2.5: PRE-EXECUTION GOVERNANCE CHECK ──────────────────────────
-    ctx.governancePre = await this.step2_5_preExecutionGovernance(ctx.plan, ctx);
+    ctx.governancePre = await withTimeout(
+      this.step2_5_preExecutionGovernance(ctx.plan, ctx),
+      "Step 2.5: Governance Pre",
+    );
     if (ctx.governancePre.decision === "reject") {
-      // End a zero-reward trajectory so Fisher estimates don't go stale
       const rejectEmb = this.taskToEmbedding(task);
       const rejectTrajId = this.sonaEngine.beginTrajectory(rejectEmb);
       this.sonaEngine.endTrajectory(rejectTrajId, 0);
@@ -200,15 +233,14 @@ export class HermesLoop {
       await this.humanEscalation(ctx, "pre-execution");
     }
 
-    // ── Step 3: Execution (with Convoy trajectory tracking) ────────────────
+    // ── Step 3: Execution (record failure but continue to step 4) ─────────
     const trajEmbedding = this.taskToEmbedding(task);
     const trajId = this.sonaEngine.beginTrajectory(trajEmbedding);
 
     try {
-      ctx.executionResults = await this.step3_execution(ctx.plan!, ctx);
+      ctx.executionResults = await withTimeout(this.step3_execution(ctx.plan!, ctx), "Step 3: Execution");
       ctx.spendAccumulated = ctx.executionResults.reduce((_acc, _r) => _acc, 0); // TODO: sum actual cost
 
-      // Record each execution result as a trajectory step
       for (const result of ctx.executionResults) {
         const stepEmb = this.taskToEmbedding({ ...task, input: `${task.input}:step:${result.stepId}` });
         const actions: number[] = [result.success ? 1.0 : 0.0];
@@ -216,31 +248,71 @@ export class HermesLoop {
         this.sonaEngine.addTrajectoryStep(trajId, stepEmb, actions, stepReward);
       }
     } catch (err) {
-      // End trajectory with zero reward on error so Fisher estimates don't go stale
-      this.sonaEngine.endTrajectory(trajId, 0);
-      throw err;
+      console.error(`[Hermes] Step 3 (Execution) failed: ${err instanceof Error ? err.message : err}`);
+      ctx.executionResults.push({
+        stepId: "execution-error",
+        output: null,
+        durationMs: Date.now() - ctx.startedAt.getTime(),
+        success: false,
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
 
     // ── Step 4: Observation & Logging ─────────────────────────────────────
-    ctx.trajectory = await this.step4_observationAndLogging(ctx);
+    try {
+      ctx.trajectory = await withTimeout(this.step4_observationAndLogging(ctx), "Step 4: Observation");
+    } catch (err) {
+      console.warn(`[Hermes] Step 4 (Observation) failed: ${err instanceof Error ? err.message : err}`);
+      // Build a minimal trajectory so downstream steps can proceed
+      ctx.trajectory = {
+        taskId: ctx.task.id,
+        input: ctx.task.input,
+        plan: ctx.plan,
+        executionResults: ctx.executionResults,
+        rewardSignal: this.computeRewardSignal(ctx),
+        totalDurationMs: Date.now() - ctx.startedAt.getTime(),
+        totalCostUsd: ctx.spendAccumulated,
+        completedAt: new Date(),
+      };
+    }
 
     // End trajectory with the computed reward signal
     const finalReward = ctx.trajectory.rewardSignal?.score ?? 0;
     this.sonaEngine.endTrajectory(trajId, finalReward);
 
-    // ── Step 5: SONA Optimization ─────────────────────────────────────────
-    await this.step5_sonaOptimization(ctx.trajectory);
+    // ── Step 5: SONA Optimization (non-fatal — best-effort) ───────────────
+    try {
+      await withTimeout(this.step5_sonaOptimization(ctx.trajectory), "Step 5: SONA Optimization");
+    } catch (err) {
+      console.warn(`[Hermes] Step 5 (SONA Optimization) failed: ${err instanceof Error ? err.message : err}`);
+    }
 
-    // ── Step 6: Skill Evolution ───────────────────────────────────────────
-    await this.step6_skillEvolution(ctx.trajectory);
+    // ── Step 6: Skill Evolution (non-fatal — best-effort) ─────────────────
+    try {
+      await withTimeout(this.step6_skillEvolution(ctx.trajectory), "Step 6: Skill Evolution");
+    } catch (err) {
+      console.warn(`[Hermes] Step 6 (Skill Evolution) failed: ${err instanceof Error ? err.message : err}`);
+    }
 
-    // ── Step 7: POST-EXECUTION GOVERNANCE FEEDBACK ────────────────────────
-    ctx.governancePost = await this.step7_postExecutionGovernance(ctx.trajectory);
+    // ── Step 7: POST-EXECUTION GOVERNANCE (non-fatal — don't block delivery)
+    try {
+      ctx.governancePost = await withTimeout(
+        this.step7_postExecutionGovernance(ctx.trajectory),
+        "Step 7: Governance Post",
+      );
+    } catch (err) {
+      console.warn(`[Hermes] Step 7 (Governance Post) failed: ${err instanceof Error ? err.message : err}`);
+    }
 
-    // ── Step 8: Consolidation ─────────────────────────────────────────────
-    await this.step8_consolidation(ctx);
+    // ── Step 8: Consolidation (non-fatal — still return trajectory) ───────
+    try {
+      await withTimeout(this.step8_consolidation(ctx), "Step 8: Consolidation");
+    } catch (err) {
+      console.warn(`[Hermes] Step 8 (Consolidation) failed: ${err instanceof Error ? err.message : err}`);
+    }
 
     console.log(`[Hermes] Task ${task.id} complete in ${Date.now() - ctx.startedAt.getTime()}ms`);
+    recordTask(ctx.trajectory);
     return ctx.trajectory;
   }
 
