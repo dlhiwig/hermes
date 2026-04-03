@@ -359,18 +359,13 @@ export class HermesLoop {
   private async step6_skillEvolution(trajectory: Trajectory): Promise<void> {
     console.log(`[Step 6] Skill Evolution — taskId=${trajectory.taskId}`);
 
+    // evaluate() now handles distillation + agent spawn internally when thresholds are met
     const evaluation = await this.skillEvolution.evaluate(trajectory);
     if (!evaluation) return;
 
-    const pattern = evaluation.pattern;
-    const successRate = await this.skillEvolution.getSuccessRate(pattern);
-
-    if (this.skillEvolution.shouldDistill(successRate)) {
-      // Distill into RVF skill or spawn permanent sub-agent
-      await this.skillEvolution.createRVFSkill(pattern, trajectory);
-      // TODO: If success_rate > SPAWN_THRESHOLD, spawn a permanent sub-agent via ruflo
-      // await this.skillEvolution.spawnPermanentAgent(evaluation.proposedSkillName);
-    }
+    console.log(
+      `[Step 6] Evaluation: pattern="${evaluation.pattern.slice(0, 40)}" successRate=${evaluation.successRate.toFixed(2)}`
+    );
   }
 
   // ── Step 7: POST-EXECUTION GOVERNANCE FEEDBACK ───────────────────────────

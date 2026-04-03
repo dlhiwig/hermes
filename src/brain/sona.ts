@@ -60,13 +60,19 @@ export class SonaDaemon {
   private routingTable: RoutingTable;
   private hyperparams: HyperparameterSet;
   private trajectoryBuffer: TrajectoryRecord[];
+  private trajectoryQueue: Trajectory[];
+  private ewcSteps: Array<{ paramId: string; fisher: number }>;
   private optimizeTimer: NodeJS.Timeout | null = null;
   private gnnUpdateTimer: NodeJS.Timeout | null = null;
+  private flushTimer: NodeJS.Timeout | null = null;
+  private ewcFlushTimer: NodeJS.Timeout | null = null;
   private ewc: EWCPlusPlus;
 
   constructor() {
     this.port = SONA_PORT;
     this.trajectoryBuffer = [];
+    this.trajectoryQueue = [];
+    this.ewcSteps = [];
     this.ewc = new EWCPlusPlus({ lambda: 0.4, importanceDecay: 0.95 });
 
     this.routingTable = {
@@ -155,11 +161,27 @@ export class SonaDaemon {
     server.listen(this.port, () => {
       console.log(`[SONA] HTTP server listening on :${this.port}`);
     });
+
+    // Background flush: batch-send queued trajectories every 5s
+    this.flushTimer = setInterval(async () => {
+      await this.flushTrajectoryQueue().catch((err) =>
+        console.error("[SONA] flushTrajectoryQueue error:", err)
+      );
+    }, SONA_OPTIMIZE_INTERVAL_MS);
+
+    // Background EWC: batch-send fisher steps every 30s
+    this.ewcFlushTimer = setInterval(async () => {
+      await this.flushEwcSteps().catch((err) =>
+        console.error("[SONA] flushEwcSteps error:", err)
+      );
+    }, SONA_GNN_UPDATE_INTERVAL_MS);
   }
 
   stop(): void {
     if (this.optimizeTimer) clearInterval(this.optimizeTimer);
     if (this.gnnUpdateTimer) clearInterval(this.gnnUpdateTimer);
+    if (this.flushTimer) clearInterval(this.flushTimer);
+    if (this.ewcFlushTimer) clearInterval(this.ewcFlushTimer);
     console.log("[SONA] Stopped");
   }
 
@@ -289,6 +311,100 @@ export class SonaDaemon {
    */
   applyGovernancePenalty(paramId: string, negativeReward: number): void {
     this.ewc.applyGovernancePenalty(paramId, negativeReward);
+  }
+
+  // ── Queue & Flush ──────────────────────────────────────────────────────
+
+  /**
+   * Enqueue a trajectory for background flushing to the SONA HTTP daemon.
+   */
+  enqueue(trajectory: Trajectory): void {
+    this.trajectoryQueue.push(trajectory);
+    console.log(`[SONA] enqueue — queueSize=${this.trajectoryQueue.length}`);
+  }
+
+  /**
+   * Add an EWC fisher step for background flushing.
+   */
+  addEwcStep(paramId: string, fisher: number): void {
+    this.ewcSteps.push({ paramId, fisher });
+  }
+
+  /**
+   * Batch-send all queued trajectories to the SONA HTTP daemon.
+   */
+  private async flushTrajectoryQueue(): Promise<void> {
+    if (this.trajectoryQueue.length === 0) return;
+
+    const batch = this.trajectoryQueue.splice(0, this.trajectoryQueue.length);
+    console.log(`[SONA] flushTrajectoryQueue — sending ${batch.length} trajectories`);
+
+    try {
+      const res = await fetch(`http://127.0.0.1:18805/sona/trajectory`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ trajectories: batch }),
+      });
+      if (!res.ok) {
+        console.warn(`[SONA] flushTrajectoryQueue — HTTP ${res.status}: ${await res.text()}`);
+        // Re-queue on failure
+        this.trajectoryQueue.unshift(...batch);
+      }
+    } catch (err) {
+      console.warn(`[SONA] flushTrajectoryQueue — daemon unreachable:`, (err as Error).message);
+      // Re-queue on connection failure
+      this.trajectoryQueue.unshift(...batch);
+    }
+  }
+
+  /**
+   * Batch-send accumulated EWC fisher steps to the SONA daemon.
+   */
+  private async flushEwcSteps(): Promise<void> {
+    if (this.ewcSteps.length === 0) return;
+
+    const batch = this.ewcSteps.splice(0, this.ewcSteps.length);
+    console.log(`[SONA] flushEwcSteps — sending ${batch.length} fisher steps`);
+
+    try {
+      const res = await fetch(`http://127.0.0.1:18805/sona/ewc`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ steps: batch }),
+      });
+      if (!res.ok) {
+        console.warn(`[SONA] flushEwcSteps — HTTP ${res.status}: ${await res.text()}`);
+        this.ewcSteps.unshift(...batch);
+      }
+    } catch (err) {
+      console.warn(`[SONA] flushEwcSteps — daemon unreachable:`, (err as Error).message);
+      this.ewcSteps.unshift(...batch);
+    }
+  }
+
+  /**
+   * Query SONA daemon stats endpoint.
+   */
+  async getStats(): Promise<Record<string, unknown>> {
+    try {
+      const res = await fetch(`http://127.0.0.1:18805/sona/stats`);
+      if (!res.ok) {
+        return { error: `HTTP ${res.status}`, local: this.getLocalStats() };
+      }
+      return await res.json() as Record<string, unknown>;
+    } catch {
+      return { error: "daemon unreachable", local: this.getLocalStats() };
+    }
+  }
+
+  private getLocalStats(): Record<string, unknown> {
+    return {
+      trajectoryBufferSize: this.trajectoryBuffer.length,
+      trajectoryQueueSize: this.trajectoryQueue.length,
+      ewcStepsPending: this.ewcSteps.length,
+      routingTableVersion: this.routingTable.version,
+      routingTableEntries: this.routingTable.entries.length,
+    };
   }
 
   getRoutingTable(): RoutingTable {

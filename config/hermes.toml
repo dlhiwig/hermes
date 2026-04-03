@@ -2,9 +2,9 @@
 # NOTE: Kill switches are INFORMATIONAL ONLY.
 # Actual enforced values are hard-coded in src/core/loop.ts.
 
-[meta]
-name = "hermes"
+[hermes]
 version = "0.1.0"
+log_level = "info"
 
 [kill_switches]
 max_recursion_depth = 5
@@ -13,7 +13,7 @@ spend_gate_usd = 50
 max_loop_iterations_per_hour = 1000
 
 [sona]
-port = 18804
+port = 18805
 optimize_interval_ms = 5000
 gnn_update_interval_ms = 30000
 
@@ -27,15 +27,36 @@ task_buffer_size = 512
 micro_lora_rank = 2
 base_lora_rank = 8
 
+[superclaw]
+endpoint = "http://localhost:9090"
+spend_gate_usd = 50
+
+[ruflo]
+version = "3.5.51"
+swarm_strategy = "parallel"
+
+[ruvector]
+dimension = 1536
+endpoint = "http://localhost:18803"
+
+[telegram]
+chat_id = 938702109
+poll_interval_ms = 2000
+
 [skills]
-distill_success_threshold = 0.85
+auto_dir = "skills/auto"
+distill_threshold = 0.85
+spawn_threshold = 0.95
 distill_min_samples = 10
-spawn_agent_threshold = 0.92
 
 [governance]
-superclaw_endpoint = "http://localhost:9090"
 pii_detection_enabled = true
 injection_detection_enabled = true
+
+[ports]
+sona = 18805
+hermes_mcp = 18806
+a2a_relay = 18807
 
 [[agents]]
 id = "alpha"
