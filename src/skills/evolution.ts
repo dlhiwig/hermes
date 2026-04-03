@@ -14,6 +14,7 @@
 import * as fs from "fs/promises";
 import * as path from "path";
 import { HermesMemory } from "../brain/ruvector.js";
+import { ReasoningBank } from "../core/reasoning-bank.js";
 import type { Trajectory, SkillCandidate } from "../core/loop.js";
 
 const DISTILL_SUCCESS_RATE = 0.85;
@@ -48,10 +49,12 @@ export interface RVFSkillManifest {
 export class SkillEvolution {
   private memory: HermesMemory;
   private patternMetrics: Map<string, PatternMetrics>;
+  private reasoningBank: ReasoningBank;
 
   constructor(memory: HermesMemory) {
     this.memory = memory;
     this.patternMetrics = new Map();
+    this.reasoningBank = new ReasoningBank();
     console.log("[SkillEvolution] Initialized");
   }
 
@@ -95,6 +98,14 @@ export class SkillEvolution {
     //   { pattern, rate: metrics.successRate, samples: metrics.totalSamples }
     // );
 
+    this.reasoningBank.recordOutcome(
+      trajectory.rewardSignal?.taskPattern ?? pattern,
+      "hermes",
+      trajectory.rewardSignal?.score ?? (success ? 1 : 0),
+      trajectory.totalDurationMs,
+      trajectory.totalCostUsd
+    );
+
     if (metrics.totalSamples < DISTILL_MIN_SAMPLES) {
       console.log(
         `[SkillEvolution] Pattern "${pattern.slice(0, 40)}" — samples=${metrics.totalSamples}/${DISTILL_MIN_SAMPLES} (not enough data yet)`
@@ -125,12 +136,7 @@ export class SkillEvolution {
     const metrics = this.patternMetrics.get(pattern);
     if (metrics) return metrics.successRate;
 
-    // TODO: Fall back to RuVector graph query
-    // const rows = await this.memory.cypher(
-    //   "MATCH (p:Pattern {name: $pattern}) RETURN p.successRate",
-    //   { pattern }
-    // );
-    return 0;
+    return this.reasoningBank.getPattern(pattern)?.successRate ?? 0;
   }
 
   // ── Skill Distillation ────────────────────────────────────────────────────
@@ -186,6 +192,9 @@ export class SkillEvolution {
       rvfPath: manifest.rvfContainerPath,
       createdAt: new Date(),
     });
+
+    // Sync distillation into the ReasoningBank pipeline
+    await this.reasoningBank.distillToSkill(pattern, trajectory);
 
     console.log(`[SkillEvolution] Distilled skill "${name}" — successRate=${manifest.successRate.toFixed(2)}`);
     return manifest;
