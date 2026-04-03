@@ -9,7 +9,7 @@ Type=simple
 User=toba
 WorkingDirectory=/home/toba/hermes
 Environment=NODE_ENV=production
-Environment=SONA_PORT=18804
+Environment=SONA_PORT=18805
 EnvironmentFile=-/home/toba/hermes/.env
 ExecStart=/home/linuxbrew/.linuxbrew/bin/node --experimental-vm-modules dist/brain/sona.js
 Restart=on-failure

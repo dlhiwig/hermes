@@ -7,11 +7,16 @@
     "dev": "tsx watch src/main.ts",
     "build": "tsc --project tsconfig.json",
     "start": "node dist/main.js",
+    "start:dev": "tsx src/main.ts --always-on",
     "loop:run": "tsx src/core/loop.ts",
     "loop:test": "tsx scripts/run-one-loop.ts",
     "sona:daemon": "tsx src/brain/sona.ts",
     "ledger:run": "tsx src/skills/ledger.ts",
     "demo:multi": "tsx scripts/multi-turn-demo.ts",
+    "demo:fast": "tsx scripts/multi-turn-demo.ts --fast",
+    "demo:mock": "tsx scripts/multi-turn-demo.ts --mock",
+    "sitrep": "bash scripts/morning-sitrep.sh",
+    "hermes:install": "systemctl --user enable hermes-sona && systemctl --user start hermes-sona",
     "test": "vitest run"
   },
   "dependencies": {

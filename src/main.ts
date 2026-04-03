@@ -5,6 +5,11 @@
  *  1. HermesLoop (8-step recursive self-learning orchestrator)
  *  2. TelegramInterface (long-polling task ingestion)
  *  3. SonaDaemon (GNN background optimizer on port 18805)
+ *  4. MCP Server (tool exposure on port 18806)
+ *
+ * Flags:
+ *   --always-on   Start all services but do NOT auto-run the recursive loop.
+ *                  Waits for Telegram input instead.
  *
  * Registers SIGINT/SIGTERM for graceful shutdown.
  */
@@ -25,6 +30,8 @@ const KILL_SWITCHES = {
 const VERSION = "0.1.0";
 const SONA_PORT = parseInt(process.env["SONA_PORT"] ?? "18805", 10);
 const MCP_PORT = parseInt(process.env["HERMES_MCP_PORT"] ?? "18806", 10);
+
+const ALWAYS_ON = process.argv.includes("--always-on");
 
 // ── Banner ───────────────────────────────────────────────────────────────────
 
@@ -49,6 +56,7 @@ function printBanner(): void {
 ║    MAX_LOOP_ITERATIONS/HOUR   = ${String(KILL_SWITCHES.MAX_LOOP_ITERATIONS_PER_HOUR).padEnd(5)}                       ║
 ║  SONA Port:                     ${String(SONA_PORT).padEnd(5)}                       ║
 ║  MCP  Port:                     ${String(MCP_PORT).padEnd(5)}                       ║
+║  Mode:                          ${ALWAYS_ON ? "always-on" : "auto-loop "}                       ║
 ╚══════════════════════════════════════════════════════════════╝
 `);
 }
@@ -72,11 +80,15 @@ async function main(): Promise<void> {
   console.log(`[Main] MCP server started on :${MCP_PORT}`);
 
   // 4. Start Telegram polling
-  const telegram = new TelegramInterface(loop);
+  const telegram = new TelegramInterface(loop, sona);
   const telegramPromise = telegram.startPolling();
   console.log("[Main] Telegram polling started");
 
-  console.log("[Main] Hermes is live. Waiting for tasks...\n");
+  if (ALWAYS_ON) {
+    console.log("\n[Main] Hermes is listening. Send /hermes <task> on Telegram to test.\n");
+  } else {
+    console.log("[Main] Hermes is live. Waiting for tasks...\n");
+  }
 
   // ── Graceful Shutdown ──────────────────────────────────────────────────
 

@@ -1,61 +1,18 @@
 {
-  "taskId": "97226354-ad1a-44b4-ac1c-12236fdc7e7b",
+  "taskId": "da90f5ea-aa78-4fcf-857a-e40af0a5e3fd",
   "input": "Analyze this ledger transaction: salary deposit of $5200 on 2025-06-01. Categorize it and recommend savings allocation.",
-  "plan": {
-    "id": "plan_97226354-ad1a-44b4-ac1c-12236fdc7e7b_1775193932687",
-    "steps": [
-      {
-        "id": "sg_97226354-ad1a-44b4-ac1c-12236fdc7e7b_0",
-        "description": "Research and retrieve context for: Analyze this ledger transaction: salary deposit of",
-        "executor": "voltAgent",
-        "dependencies": [],
-        "inputs": {
-          "goalDescription": "Research and retrieve context for: Analyze this ledger transaction: salary deposit of"
-        }
-      },
-      {
-        "id": "sg_97226354-ad1a-44b4-ac1c-12236fdc7e7b_1",
-        "description": "Execute primary task: Analyze this ledger transaction: salary deposit of",
-        "executor": "voltAgent",
-        "dependencies": [
-          "sg_97226354-ad1a-44b4-ac1c-12236fdc7e7b_0"
-        ],
-        "inputs": {
-          "goalDescription": "Execute primary task: Analyze this ledger transaction: salary deposit of"
-        }
-      }
-    ],
-    "estimatedCostUsd": 0.02,
-    "estimatedDurationMs": 4000,
-    "subAgents": [],
-    "gstackGates": [
-      "plan"
-    ]
-  },
-  "executionResults": [
-    {
-      "stepId": "sg_97226354-ad1a-44b4-ac1c-12236fdc7e7b_0",
-      "output": null,
-      "durationMs": 0,
-      "success": true
-    },
-    {
-      "stepId": "sg_97226354-ad1a-44b4-ac1c-12236fdc7e7b_1",
-      "output": null,
-      "durationMs": 0,
-      "success": true
-    }
-  ],
+  "plan": null,
+  "executionResults": [],
   "rewardSignal": {
-    "score": 1,
-    "latencyMs": 317670,
-    "costEfficiency": 1000,
+    "score": 0,
+    "latencyMs": 0,
+    "costEfficiency": 0,
     "taskPattern": "Analyze this ledger transaction: salary deposit of $5200 on 2025",
     "labels": [
-      "internal"
+      "aborted"
     ]
   },
-  "totalDurationMs": 317670,
+  "totalDurationMs": 30019,
   "totalCostUsd": 0,
-  "completedAt": "2026-04-03T05:25:32.695Z"
+  "completedAt": "2026-04-03T07:04:06.487Z"
 }
