@@ -100,11 +100,11 @@ export class LedgerSkill {
 
       // Step 1: classify the transaction
       const classifyEmb = hashEmbedding(`classify:${tx.category}:${tx.amount}`);
-      this.sona.addTrajectoryStep(trajId, classifyEmb, [tx.category as unknown as number], reward * 0.5);
+      this.sona.addTrajectoryStep(trajId, classifyEmb, [reward * 0.5], reward * 0.5);
 
       // Step 2: record the financial impact
       const impactEmb = hashEmbedding(`impact:${tx.amount}:${tx.description}`);
-      this.sona.addTrajectoryStep(trajId, impactEmb, [tx.amount], reward * 0.8);
+      this.sona.addTrajectoryStep(trajId, impactEmb, [reward * 0.8], reward * 0.8);
 
       // End trajectory with final reward
       this.sona.endTrajectory(trajId, reward);
