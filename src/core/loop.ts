@@ -246,15 +246,13 @@ export class HermesLoop {
   private async step1_inputAndRetrieval(task: HermesTask): Promise<RetrievalResult[]> {
     console.log(`[Step 1] Input & Retrieval — task=${task.id}`);
 
-    // TODO: Call RuVector hybrid search (vector + keyword + Cypher graph traversal)
-    // const results = await this.memory.hybridSearch(task.input, {
-    //   vectorTopK: 10,
-    //   keywordBoost: 0.3,
-    //   cypherQuery: `MATCH (n:Skill)-[:SOLVED]->(t:Task) WHERE t.pattern =~ $pattern RETURN n`,
-    //   filters: { source: task.source, maxAge: "7d" },
-    // });
+    const results = await this.memory.hybridSearch(task.input, {
+      vectorTopK: 10,
+      keywordBoost: 0.3,
+      filters: { source: task.source },
+    });
 
-    return [];
+    return results;
   }
 
   // ── Step 2: Planning ──────────────────────────────────────────────────────
@@ -335,8 +333,7 @@ export class HermesLoop {
       completedAt: new Date(),
     };
 
-    // TODO: Serialize to RVF container and store
-    // await this.memory.store(trajectory);
+    await this.memory.store(trajectory);
 
     return trajectory;
   }
@@ -383,12 +380,9 @@ export class HermesLoop {
 
     if (!ctx.trajectory) return;
 
-    // TODO: Write back to RuVector graph + update embeddings
-    // await this.memory.updateGraph([
-    //   { from: ctx.task.id, to: ctx.trajectory.taskId, relation: "COMPLETED_BY" },
-    // ]);
-
-    // TODO: Log improvement metric to SONA dashboard
+    await this.memory.updateGraph([
+      { from: ctx.task.id, to: ctx.trajectory.taskId, relation: "COMPLETED_BY" },
+    ]);
     const metric = ctx.trajectory.rewardSignal?.score ?? 0;
     console.log(`[Step 8] Improvement metric: ${metric.toFixed(4)}`);
   }

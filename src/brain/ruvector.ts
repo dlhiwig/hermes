@@ -1,14 +1,24 @@
 /**
  * RuVector Integration Client
  *
- * Wraps the `ruvector` npm package to provide Hermes with:
- *  - Hybrid search (vector + keyword + Cypher graph)
- *  - Trajectory storage (RVF container format)
- *  - Graph edge management
+ * Connects to the RuVector daemon (Qdrant-compatible HTTP API at port 18803)
+ * to provide Hermes with:
+ *  - Vector similarity search
+ *  - Trajectory storage (as points with payload)
+ *  - Graph edge management (stored as points with edge metadata)
  *  - Embedding upserts
+ *
+ * Falls back to in-memory stubs when RuVector is unreachable.
  */
 
 import type { Trajectory, RetrievalResult } from "../core/loop.js";
+
+// ── Constants ─────────────────────────────────────────────────────────────────
+
+const TRAJECTORY_COLLECTION = "hermes-trajectories";
+const GRAPH_COLLECTION = "hermes-graph-edges";
+const SKILLS_COLLECTION = "hermes-skills";
+const VECTOR_DIM = 256;
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -50,39 +60,112 @@ export interface RVFSkill {
 
 export class HermesMemory {
   private url: string;
-  // TODO: private client: RuVectorClient  (from `ruvector` npm package)
+  private connected: boolean | null = null; // null = untested
+  private collectionsReady = false;
 
   constructor() {
-    this.url = process.env["RUVECTOR_URL"] ?? "http://localhost:7474";
-    // TODO: this.client = new RuVectorClient({ url: this.url });
+    this.url = process.env["RUVECTOR_URL"] ?? "http://127.0.0.1:18803";
     console.log(`[RuVector] Initialized — url=${this.url}`);
   }
 
+  // ── Connection Check ────────────────────────────────────────────────────
+
+  async checkConnection(): Promise<boolean> {
+    try {
+      const resp = await fetch(`${this.url}/health`, {
+        signal: AbortSignal.timeout(2000),
+      });
+      if (!resp.ok) { this.connected = false; return false; }
+      const data = (await resp.json()) as { status: string };
+      this.connected = data.status === "healthy";
+      return this.connected;
+    } catch {
+      this.connected = false;
+      return false;
+    }
+  }
+
+  private async ensureConnected(): Promise<boolean> {
+    if (this.connected === null) {
+      await this.checkConnection();
+    }
+    return this.connected ?? false;
+  }
+
   /**
-   * Hybrid search: combines vector similarity, BM25 keyword ranking, and
-   * Cypher graph traversal. Returns ranked results from all sources.
+   * Ensure required collections exist. Idempotent — skips after first success.
+   */
+  private async ensureCollections(): Promise<void> {
+    if (this.collectionsReady) return;
+    if (!(await this.ensureConnected())) return;
+
+    for (const name of [TRAJECTORY_COLLECTION, GRAPH_COLLECTION, SKILLS_COLLECTION]) {
+      try {
+        const check = await fetch(`${this.url}/collections/${name}`, {
+          signal: AbortSignal.timeout(2000),
+        });
+        if (check.ok) continue;
+
+        await fetch(`${this.url}/collections`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          signal: AbortSignal.timeout(3000),
+          body: JSON.stringify({ name, dimension: VECTOR_DIM }),
+        });
+        console.log(`[RuVector] Created collection: ${name}`);
+      } catch {
+        // Collection may already exist or service unavailable
+      }
+    }
+    this.collectionsReady = true;
+  }
+
+  // ── Search ──────────────────────────────────────────────────────────────
+
+  /**
+   * Vector similarity search against trajectories collection.
+   * Falls back to empty results when RuVector is unreachable.
    */
   async hybridSearch(
     query: string,
     options: HybridSearchOptions = {}
   ): Promise<RetrievalResult[]> {
-    const { vectorTopK = 10, keywordBoost = 0.3, cypherQuery, filters } = options;
-
-    // TODO: this.client.hybridSearch({
-    //   query,
-    //   vectorTopK,
-    //   keywordBoost,
-    //   cypherQuery,
-    //   filters,
-    // })
+    const { vectorTopK = 10 } = options;
 
     console.log(
-      `[RuVector] hybridSearch — query="${query.slice(0, 40)}" topK=${vectorTopK} keywordBoost=${keywordBoost}`
+      `[RuVector] hybridSearch — query="${query.slice(0, 40)}" topK=${vectorTopK}`
     );
-    void cypherQuery;
-    void filters;
 
-    return [];
+    if (!(await this.ensureConnected())) return [];
+    await this.ensureCollections();
+
+    try {
+      const vector = this.textToVector(query);
+      const resp = await fetch(
+        `${this.url}/collections/${TRAJECTORY_COLLECTION}/points/search`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          signal: AbortSignal.timeout(5000),
+          body: JSON.stringify({ vector, k: vectorTopK }),
+        }
+      );
+      if (!resp.ok) return [];
+
+      const data = (await resp.json()) as {
+        results?: Array<{ id: string; score: number; payload?: Record<string, unknown> }>;
+      };
+
+      return (data.results ?? []).map((r) => ({
+        id: r.id,
+        content: String(r.payload?.["input"] ?? ""),
+        score: r.score,
+        source: "vector" as const,
+        metadata: r.payload ?? {},
+      }));
+    } catch {
+      return [];
+    }
   }
 
   /**
@@ -95,8 +178,10 @@ export class HermesMemory {
     return this.hybridSearch(query, filters !== undefined ? { filters } : {});
   }
 
+  // ── Store ───────────────────────────────────────────────────────────────
+
   /**
-   * Serialize a Trajectory into an RVF container and persist it.
+   * Serialize a Trajectory into an RVF container and persist it as a point.
    */
   async store(trajectory: Trajectory): Promise<RVFContainer> {
     const container: RVFContainer = {
@@ -107,29 +192,105 @@ export class HermesMemory {
       tags: trajectory.rewardSignal?.labels ?? [],
     };
 
-    // TODO: await this.client.upsertRVF(container);
     console.log(`[RuVector] store — rvfId=${container.id}`);
 
+    if (await this.ensureConnected()) {
+      await this.ensureCollections();
+      try {
+        const vector = this.textToVector(trajectory.input);
+        await fetch(
+          `${this.url}/collections/${TRAJECTORY_COLLECTION}/points`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            signal: AbortSignal.timeout(5000),
+            body: JSON.stringify({
+              points: [
+                {
+                  id: container.id,
+                  vector,
+                  payload: {
+                    trajectoryId: trajectory.taskId,
+                    input: trajectory.input,
+                    reward: trajectory.rewardSignal?.score ?? 0,
+                    costUsd: trajectory.totalCostUsd,
+                    durationMs: trajectory.totalDurationMs,
+                    tags: container.tags,
+                    createdAt: container.createdAt.toISOString(),
+                  },
+                },
+              ],
+            }),
+          }
+        );
+      } catch (err) {
+        console.warn(`[RuVector] store failed (non-fatal):`, (err as Error).message);
+      }
+    }
+
     return container;
+  }
+
+  // ── Graph Edges ─────────────────────────────────────────────────────────
+
+  /**
+   * Store a graph edge as a point in the graph-edges collection.
+   */
+  async storeGraphEdge(edge: GraphEdge): Promise<void> {
+    console.log(`[RuVector] storeGraphEdge — ${edge.from} -[${edge.relation}]-> ${edge.to}`);
+
+    if (!(await this.ensureConnected())) return;
+    await this.ensureCollections();
+
+    try {
+      const edgeId = `edge_${edge.from}_${edge.relation}_${edge.to}`;
+      const vector = this.textToVector(`${edge.from}:${edge.relation}:${edge.to}`);
+      await fetch(`${this.url}/collections/${GRAPH_COLLECTION}/points`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        signal: AbortSignal.timeout(5000),
+        body: JSON.stringify({
+          points: [
+            {
+              id: edgeId,
+              vector,
+              payload: {
+                from: edge.from,
+                to: edge.to,
+                relation: edge.relation,
+                weight: edge.weight ?? 1.0,
+                ...(edge.metadata ?? {}),
+              },
+            },
+          ],
+        }),
+      });
+    } catch (err) {
+      console.warn(`[RuVector] storeGraphEdge failed (non-fatal):`, (err as Error).message);
+    }
   }
 
   /**
    * Update graph edges (e.g. task → completed_by → trajectory).
    */
   async updateGraph(edges: GraphEdge[]): Promise<void> {
-    // TODO: await this.client.mergeEdges(edges);
     console.log(`[RuVector] updateGraph — ${edges.length} edge(s)`);
+    for (const edge of edges) {
+      await this.storeGraphEdge(edge);
+    }
   }
 
   /**
    * Cypher query pass-through for advanced graph operations.
+   * Falls back to empty results (RuVector uses vector search, not Cypher).
    */
   async cypher(query: string, params?: Record<string, unknown>): Promise<unknown[]> {
-    // TODO: return await this.client.cypher(query, params);
     console.log(`[RuVector] cypher — ${query.slice(0, 60)}`);
     void params;
     return [];
   }
+
+  // ── Embeddings & Skills ─────────────────────────────────────────────────
 
   /**
    * Upsert embeddings for a document (used after skill distillation).
@@ -139,25 +300,123 @@ export class HermesMemory {
     vector: Float32Array,
     metadata: Record<string, unknown>
   ): Promise<void> {
-    // TODO: await this.client.upsertVector({ id, vector, metadata });
     console.log(`[RuVector] upsertEmbedding — id=${id} dim=${vector.length}`);
-    void metadata;
+
+    if (!(await this.ensureConnected())) return;
+    await this.ensureCollections();
+
+    try {
+      await fetch(`${this.url}/collections/${TRAJECTORY_COLLECTION}/points`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        signal: AbortSignal.timeout(5000),
+        body: JSON.stringify({
+          points: [{ id, vector: Array.from(vector), payload: metadata }],
+        }),
+      });
+    } catch (err) {
+      console.warn(`[RuVector] upsertEmbedding failed (non-fatal):`, (err as Error).message);
+    }
   }
 
   /**
    * Persist a distilled skill as an RVF skill record.
    */
   async storeSkill(skill: RVFSkill): Promise<void> {
-    // TODO: await this.client.upsertSkill(skill);
     console.log(`[RuVector] storeSkill — name=${skill.name} successRate=${skill.successRate}`);
+
+    if (!(await this.ensureConnected())) return;
+    await this.ensureCollections();
+
+    try {
+      const vector = this.textToVector(skill.pattern);
+      await fetch(`${this.url}/collections/${SKILLS_COLLECTION}/points`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        signal: AbortSignal.timeout(5000),
+        body: JSON.stringify({
+          points: [
+            {
+              id: skill.id,
+              vector,
+              payload: {
+                name: skill.name,
+                pattern: skill.pattern,
+                executor: skill.executor,
+                successRate: skill.successRate,
+                rvfPath: skill.rvfPath,
+                createdAt: skill.createdAt.toISOString(),
+              },
+            },
+          ],
+        }),
+      });
+    } catch (err) {
+      console.warn(`[RuVector] storeSkill failed (non-fatal):`, (err as Error).message);
+    }
   }
 
   /**
    * Look up all RVF skills for a given task pattern.
    */
   async findSkills(pattern: string): Promise<RVFSkill[]> {
-    // TODO: return await this.client.searchSkills({ pattern });
     console.log(`[RuVector] findSkills — pattern="${pattern.slice(0, 40)}"`);
-    return [];
+
+    if (!(await this.ensureConnected())) return [];
+    await this.ensureCollections();
+
+    try {
+      const vector = this.textToVector(pattern);
+      const resp = await fetch(
+        `${this.url}/collections/${SKILLS_COLLECTION}/points/search`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          signal: AbortSignal.timeout(5000),
+          body: JSON.stringify({ vector, k: 10 }),
+        }
+      );
+      if (!resp.ok) return [];
+
+      const data = (await resp.json()) as {
+        results?: Array<{ id: string; score: number; payload?: Record<string, unknown> }>;
+      };
+
+      return (data.results ?? []).map((r) => ({
+        id: String(r.payload?.["name"] ?? r.id),
+        name: String(r.payload?.["name"] ?? ""),
+        pattern: String(r.payload?.["pattern"] ?? ""),
+        executor: String(r.payload?.["executor"] ?? ""),
+        successRate: Number(r.payload?.["successRate"] ?? 0),
+        rvfPath: String(r.payload?.["rvfPath"] ?? ""),
+        createdAt: new Date(String(r.payload?.["createdAt"] ?? new Date().toISOString())),
+      }));
+    } catch {
+      return [];
+    }
+  }
+
+  // ── Helpers ─────────────────────────────────────────────────────────────
+
+  /**
+   * Simple hash-based text → 256-dim vector for storage/search.
+   * Matches the embedding approach used in loop.ts taskToEmbedding().
+   */
+  private textToVector(text: string): number[] {
+    const emb = new Array(VECTOR_DIM).fill(0) as number[];
+    for (let i = 0; i < text.length; i++) {
+      const code = text.charCodeAt(i);
+      const idx = (code * 31 + i * 17) % VECTOR_DIM;
+      emb[idx] = (emb[idx] ?? 0) + ((code * 0.0073) % 1.0);
+    }
+    let norm = 0;
+    for (let i = 0; i < VECTOR_DIM; i++) {
+      norm += (emb[i] ?? 0) * (emb[i] ?? 0);
+    }
+    norm = Math.sqrt(norm) || 1;
+    for (let i = 0; i < VECTOR_DIM; i++) {
+      emb[i] = (emb[i] ?? 0) / norm;
+    }
+    return emb;
   }
 }

@@ -61,6 +61,9 @@ export interface AuditEntry {
   promptInjectionDetected: boolean;
   proofHash?: string;
   superclawReachable: boolean;
+  taskInput?: string;
+  planStepsCount?: number;
+  executorTypes?: string[];
 }
 
 // ── Audit log path ──────────────────────────────────────────────────────────
@@ -154,6 +157,34 @@ export class SuperClawGovernance {
     }
   }
 
+  /**
+   * POST task validation to SuperClaw gateway for governance audit trail.
+   * Non-blocking: logs the result but does not gate on it (thresholds gate separately).
+   */
+  private async postGovernanceValidation(
+    task: HermesTask,
+    plan: HermesPlan | null,
+    decision: GovernanceResult["decision"],
+    proofHash: string
+  ): Promise<void> {
+    try {
+      await fetch(`${this.endpoint}/v1/swarm`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        signal: AbortSignal.timeout(3000),
+        body: JSON.stringify({
+          objective: `[hermes-governance] task=${task.id} decision=${decision}`,
+          maxAgents: 1,
+          timeout: 5000,
+          model: "governance-audit",
+        }),
+      });
+      console.log(`[SuperClaw] Posted governance validation for task=${task.id}`);
+    } catch {
+      // Non-blocking — SuperClaw may be offline
+    }
+  }
+
   // ── Pre-Execution Check (Step 2.5) ────────────────────────────────────────
 
   /**
@@ -207,6 +238,8 @@ export class SuperClawGovernance {
       promptInjectionDetected: injectionDetected,
     };
 
+    const executorTypes = plan?.steps.map((s) => s.executor) ?? [];
+
     await this.writeAuditLog({
       timestamp: new Date().toISOString(),
       taskId: task.id,
@@ -218,7 +251,13 @@ export class SuperClawGovernance {
       promptInjectionDetected: injectionDetected,
       proofHash,
       superclawReachable,
+      taskInput: task.input.slice(0, 100),
+      planStepsCount: plan?.steps.length ?? 0,
+      executorTypes: [...new Set(executorTypes)],
     });
+
+    // Fire-and-forget governance validation to SuperClaw gateway
+    void this.postGovernanceValidation(task, plan, decision, proofHash);
 
     console.log(`[SuperClaw] Pre-execution result — decision=${result.decision} reason="${result.reason}"`);
     return result;
@@ -251,6 +290,8 @@ export class SuperClawGovernance {
       );
     }
 
+    const executorTypes = trajectory.plan?.steps.map((s) => s.executor) ?? [];
+
     await this.writeAuditLog({
       timestamp: new Date().toISOString(),
       taskId: trajectory.taskId,
@@ -261,6 +302,9 @@ export class SuperClawGovernance {
       projectedCostUsd: trajectory.totalCostUsd,
       promptInjectionDetected: false,
       superclawReachable: false,
+      taskInput: trajectory.input.slice(0, 100),
+      planStepsCount: trajectory.plan?.steps.length ?? 0,
+      executorTypes: [...new Set(executorTypes)],
     });
 
     console.log(`[SuperClaw] Post-execution result — decision=${result.decision}`);
@@ -394,7 +438,8 @@ export class SuperClawGovernance {
   }
 
   private generateProofHash(taskId: string, planId: string): string {
-    const data = `${taskId}:${planId}:${Date.now()}`;
+    // Full SHA-256 hex (64 chars) — includes task ID, plan ID, and timestamp
+    const data = `hermes:governance:${taskId}:${planId}:${Date.now()}`;
     return createHash("sha256").update(data).digest("hex");
   }
 }
