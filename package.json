@@ -11,8 +11,10 @@
     "sona:daemon": "tsx src/brain/sona.ts"
   },
   "dependencies": {
-    "ruvector": "^0.1.0",
-    "@ruvector/sona": "^0.1.0",
+    "@ruvector/ruvllm": "2.5.4",
+    "@ruvector/sona": "0.1.4",
+    "ruflo": "3.5.51",
+    "ruvector": "0.1.38",
     "typescript": "^5.4.5",
     "zod": "^3.23.8"
   },

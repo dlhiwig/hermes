@@ -179,7 +179,7 @@ TODO: Hermes will populate this from the representative trajectory.
       sampleTrajectories: [],
       proposedSkillName: this.toSkillName(taskPattern),
       proposedExecutor: "voltAgent",
-      rvfContainerPath: p.rvfContainerPath,
+      ...(p.rvfContainerPath !== undefined && { rvfContainerPath: p.rvfContainerPath }),
     };
   }
 

@@ -7,7 +7,7 @@
 
 use axum::{routing::get, Router};
 use std::net::SocketAddr;
-use tracing::{info, warn};
+use tracing::info;
 
 const SONA_PORT: u16 = 18804;
 

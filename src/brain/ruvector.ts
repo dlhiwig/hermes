@@ -92,7 +92,7 @@ export class HermesMemory {
     query: string,
     filters?: Record<string, unknown>
   ): Promise<RetrievalResult[]> {
-    return this.hybridSearch(query, { filters });
+    return this.hybridSearch(query, filters !== undefined ? { filters } : {});
   }
 
   /**
