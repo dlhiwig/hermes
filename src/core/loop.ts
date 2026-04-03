@@ -14,6 +14,7 @@ import { SonaDaemon } from "../brain/sona.js";
 import { HermesPlanner } from "../orchestration/planner.js";
 import { SuperClawGovernance } from "../governance/superclaw.js";
 import { SkillEvolution } from "../skills/evolution.js";
+import { VoltAgentExecutor, VOLT_AGENT_ROLES } from "../skills/voltAgent.js";
 
 // ── Kill Switches ─────────────────────────────────────────────────────────────
 
@@ -140,6 +141,7 @@ export class HermesLoop {
   private planner: HermesPlanner;
   private governance: SuperClawGovernance;
   private skillEvolution: SkillEvolution;
+  private voltAgent: VoltAgentExecutor;
   private metrics: LoopMetrics;
 
   constructor() {
@@ -149,6 +151,7 @@ export class HermesLoop {
     this.planner = new HermesPlanner();
     this.governance = new SuperClawGovernance();
     this.skillEvolution = new SkillEvolution(this.memory);
+    this.voltAgent = new VoltAgentExecutor();
     this.metrics = {
       iterationsThisHour: 0,
       lastResetAt: new Date(),
@@ -390,9 +393,24 @@ export class HermesLoop {
   // ── Executor Stubs ────────────────────────────────────────────────────────
 
   private async runVoltAgent(step: PlanStep): Promise<ExecutionResult> {
-    // TODO: Integrate VoltAgent TypeScript worker
     console.log(`[VoltAgent] Running step ${step.id}`);
-    return { stepId: step.id, output: null, durationMs: 0, success: true };
+    const roleName = (step.inputs?.role as string) ?? "financial-analyst";
+    const role = VOLT_AGENT_ROLES[roleName];
+    if (!role) {
+      return { stepId: step.id, output: null, durationMs: 0, success: false, error: `Unknown VoltAgent role: ${roleName}` };
+    }
+
+    const task = (step.inputs?.task as string) ?? step.description;
+    const context = step.inputs?.context as string | undefined;
+    const start = Date.now();
+
+    try {
+      const output = await this.voltAgent.execute(role, task, context);
+      return { stepId: step.id, output, durationMs: Date.now() - start, success: true };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return { stepId: step.id, output: null, durationMs: Date.now() - start, success: false, error: msg };
+    }
   }
 
   private async runSkynetRust(step: PlanStep): Promise<ExecutionResult> {
