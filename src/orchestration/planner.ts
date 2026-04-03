@@ -3,11 +3,20 @@
  *
  * Orchestrates planning across three systems:
  *  - gstack: structured plan → build → QA → ship gates
- *  - ruflo: multi-agent hive-mind spawning
- *  - deer-flow: long-horizon sub-agent decomposition
+ *  - ruflo: multi-agent hive-mind spawning (CLI integration via child_process)
+ *  - deer-flow: long-horizon sub-agent decomposition (Ollama Qwen3.5)
  */
 
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import type { HermesTask, HermesPlan, PlanStep, RetrievalResult } from "../core/loop.js";
+
+const execFileAsync = promisify(execFile);
+
+const RUFLO_BIN = "ruflo";
+const OLLAMA_URL = "http://127.0.0.1:11434";
+const OLLAMA_MODEL = "qwen3.5:27b";
+const MAX_RECURSION_DEPTH = 5;
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -102,21 +111,39 @@ export class HermesPlanner {
    * is sufficient before committing to execution.
    */
   async gstackPlan(task: HermesTask, context: RetrievalResult[]): Promise<GStackGate> {
-    // TODO: Call gstack plan gate CLI or API
-    // const result = await gstack.gate("plan", { task, context });
+    const blockers: string[] = [];
+    const checklist: string[] = [];
 
-    const gate: GStackGate = {
-      name: "plan",
-      passed: context.length >= 0, // placeholder — always passes in stub
-      blockers: [],
-      checklist: [
-        "Task has a clear input ✓",
-        "Recursion depth within limit ✓",
-        `Context documents retrieved: ${context.length}`,
-      ],
-    };
+    // Gate 1: Task input must be substantive
+    if (task.input.length > 10) {
+      checklist.push("Task input is substantive (>10 chars) ✓");
+    } else {
+      blockers.push(`Task input too short (${task.input.length} chars, need >10)`);
+    }
 
-    console.log(`[gstack] plan gate — passed=${gate.passed}`);
+    // Gate 2: Recursion depth within safety limit
+    if (task.recursionDepth < MAX_RECURSION_DEPTH) {
+      checklist.push(`Recursion depth ${task.recursionDepth}/${MAX_RECURSION_DEPTH} ✓`);
+    } else {
+      blockers.push(`Recursion depth ${task.recursionDepth} exceeds max ${MAX_RECURSION_DEPTH}`);
+    }
+
+    // Gate 3: Retrieved context quality — at least one doc with score > 0.5
+    const highQualityDocs = context.filter((c) => c.score > 0.5);
+    if (highQualityDocs.length > 0) {
+      checklist.push(`High-quality context docs: ${highQualityDocs.length}/${context.length} ✓`);
+    } else if (context.length === 0) {
+      blockers.push("No context documents retrieved");
+    } else {
+      blockers.push(
+        `All ${context.length} context docs have score ≤ 0.5 (best: ${Math.max(...context.map((c) => c.score)).toFixed(2)})`
+      );
+    }
+
+    const passed = blockers.length === 0;
+    const gate: GStackGate = { name: "plan", passed, blockers, checklist };
+
+    console.log(`[gstack] plan gate — passed=${passed} blockers=${blockers.length}`);
     return gate;
   }
 
@@ -157,26 +184,56 @@ export class HermesPlanner {
     task: HermesTask,
     decomposition: DeerFlowDecomposition
   ): Promise<RufloHive> {
-    // TODO: const ruflo = new RufloClient({ apiKey: process.env.RUFLO_API_KEY });
-    // const hive = await ruflo.spawnHive({
-    //   taskId: task.id,
-    //   subGoals: decomposition.subGoals,
-    //   coordinationStrategy: "parallel",
-    // });
+    const hiveId = `hive_${task.id}`;
+    const agentGoals = decomposition.subGoals.filter((g) => g.requiresSubAgent);
 
-    const agents: RufloAgent[] = decomposition.subGoals
-      .filter((g) => g.requiresSubAgent)
-      .map((g, i) => ({
-        agentId: `ruflo_${task.id}_${i}`,
-        role: g.description.slice(0, 40),
-        capabilities: ["research", "code", "plan"],
-        status: "idle" as const,
-      }));
+    // Initialize ruflo swarm in v3 mode
+    try {
+      const { stdout: swarmOut } = await execFileAsync(RUFLO_BIN, [
+        "swarm",
+        "init",
+        "--v3-mode",
+      ]);
+      console.log(`[Ruflo] Swarm init: ${swarmOut.trim()}`);
+    } catch (err) {
+      console.warn(`[Ruflo] Swarm init failed, continuing with agent spawn: ${err}`);
+    }
+
+    // Spawn one agent per sub-goal that requires a sub-agent
+    const agents: RufloAgent[] = [];
+    for (const [i, goal] of agentGoals.entries()) {
+      const agentId = `ruflo_${task.id}_${i}`;
+      try {
+        const { stdout } = await execFileAsync(RUFLO_BIN, [
+          "agent",
+          "spawn",
+          "--id",
+          agentId,
+          "--role",
+          goal.description.slice(0, 80),
+        ]);
+        console.log(`[Ruflo] Spawned agent ${agentId}: ${stdout.trim()}`);
+        agents.push({
+          agentId,
+          role: goal.description.slice(0, 40),
+          capabilities: ["research", "code", "plan"],
+          status: "running",
+        });
+      } catch (err) {
+        console.warn(`[Ruflo] Agent spawn failed for ${agentId}: ${err}`);
+        agents.push({
+          agentId,
+          role: goal.description.slice(0, 40),
+          capabilities: ["research", "code", "plan"],
+          status: "failed",
+        });
+      }
+    }
 
     const hive: RufloHive = {
-      hiveId: `hive_${task.id}`,
+      hiveId,
       agents,
-      coordinationStrategy: "parallel",
+      coordinationStrategy: agentGoals.length > 3 ? "consensus" : "parallel",
     };
 
     console.log(`[Ruflo] Spawned hive=${hive.hiveId} agents=${agents.length}`);
@@ -189,14 +246,63 @@ export class HermesPlanner {
    * Decompose a high-level task into hierarchical sub-goals using deer-flow.
    */
   async deerFlowDecompose(task: HermesTask): Promise<DeerFlowDecomposition> {
-    // TODO: const deerFlow = new DeerFlowClient();
-    // return await deerFlow.decompose({
-    //   goal: task.input,
-    //   context: task.context,
-    //   maxDepth: 3,
-    //   sandbox: process.env.DEER_FLOW_SANDBOX === "true",
-    // });
+    // Try Ollama Qwen3.5 for intelligent decomposition, fall back to static split
+    try {
+      return await this.ollamaDecompose(task);
+    } catch (err) {
+      console.warn(`[DeerFlow] Ollama decomposition failed, using static fallback: ${err}`);
+      return this.staticDecompose(task);
+    }
+  }
 
+  private async ollamaDecompose(task: HermesTask): Promise<DeerFlowDecomposition> {
+    const prompt = [
+      "You are a task decomposition engine. Break the following task into 2-5 concrete sub-goals.",
+      "Respond ONLY with valid JSON matching this schema (no markdown, no explanation):",
+      '{"subGoals":[{"id":"sg_0","description":"...","complexity":"low|medium|high","requiresSubAgent":true|false}]}',
+      "",
+      `Task: ${task.input}`,
+      task.context ? `Context: ${JSON.stringify(task.context)}` : "",
+    ].join("\n");
+
+    const res = await fetch(`${OLLAMA_URL}/api/generate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: OLLAMA_MODEL, prompt, stream: false }),
+    });
+
+    if (!res.ok) {
+      throw new Error(`Ollama returned ${res.status}: ${await res.text()}`);
+    }
+
+    const data = (await res.json()) as { response: string };
+    const parsed = JSON.parse(data.response) as {
+      subGoals: Array<{
+        id: string;
+        description: string;
+        complexity: "low" | "medium" | "high";
+        requiresSubAgent: boolean;
+      }>;
+    };
+
+    const subGoals: SubGoal[] = parsed.subGoals.slice(0, 5).map((sg, i) => ({
+      id: `sg_${task.id}_${i}`,
+      description: sg.description,
+      estimatedComplexity: sg.complexity,
+      requiresSubAgent: sg.requiresSubAgent,
+    }));
+
+    // Build linear dependency chain
+    const dependencyGraph: Record<string, string[]> = {};
+    for (let i = 1; i < subGoals.length; i++) {
+      dependencyGraph[subGoals[i]!.id] = [subGoals[i - 1]!.id];
+    }
+
+    console.log(`[DeerFlow] Ollama decomposed into ${subGoals.length} sub-goals`);
+    return { rootGoal: task.input, subGoals, dependencyGraph };
+  }
+
+  private staticDecompose(task: HermesTask): DeerFlowDecomposition {
     const subGoals: SubGoal[] = [
       {
         id: `sg_${task.id}_0`,

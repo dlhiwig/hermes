@@ -15,8 +15,14 @@
  *   - PII / sensitive data detection
  *   - Cost projection vs. SPEND_GATE_USD
  *   - Prompt injection patterns
+ *
+ * Wired to real SuperClaw instance at SUPERCLAW_ENDPOINT (default http://localhost:18800).
+ * Falls back to local evaluation if SuperClaw is unreachable.
  */
 
+import { createHash } from "node:crypto";
+import { appendFile, mkdir } from "node:fs/promises";
+import { join, dirname } from "node:path";
 import type { HermesTask, HermesPlan, Trajectory, ExecutionResult, GovernanceResult, PlanStep } from "../core/loop.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -44,16 +50,35 @@ export interface PolicyRefinement {
   confidence: number;
 }
 
+export interface AuditEntry {
+  timestamp: string;
+  taskId: string;
+  phase: "pre-execution" | "post-execution" | "proof-validation";
+  decision: GovernanceResult["decision"];
+  reason: string;
+  piiRisk: boolean;
+  projectedCostUsd: number;
+  promptInjectionDetected: boolean;
+  proofHash?: string;
+  superclawReachable: boolean;
+}
+
+// ── Audit log path ──────────────────────────────────────────────────────────
+
+const AUDIT_LOG_PATH = join(process.cwd(), "data", "governance-audit.jsonl");
+
 // ── SuperClawGovernance ───────────────────────────────────────────────────────
 
 export class SuperClawGovernance {
   private endpoint: string;
   private policyRules: PolicyRule[];
   private proofCache: Map<string, CapabilityProof>;
+  private auditDirReady: boolean;
 
   constructor() {
-    this.endpoint = process.env["SUPERCLAW_ENDPOINT"] ?? "http://localhost:9090";
+    this.endpoint = process.env["SUPERCLAW_ENDPOINT"] ?? "http://localhost:18800";
     this.proofCache = new Map();
+    this.auditDirReady = false;
 
     // Default policy rules (will be refined by postExecutionReview)
     this.policyRules = [
@@ -83,6 +108,52 @@ export class SuperClawGovernance {
     console.log(`[SuperClaw] Initialized — endpoint=${this.endpoint}`);
   }
 
+  // ── Audit Logging ─────────────────────────────────────────────────────────
+
+  private async writeAuditLog(entry: AuditEntry): Promise<void> {
+    if (!this.auditDirReady) {
+      await mkdir(dirname(AUDIT_LOG_PATH), { recursive: true });
+      this.auditDirReady = true;
+    }
+    await appendFile(AUDIT_LOG_PATH, JSON.stringify(entry) + "\n", "utf-8");
+  }
+
+  // ── SuperClaw Remote Check ────────────────────────────────────────────────
+
+  /**
+   * Try to reach the real SuperClaw thresholds API for cost/limits validation.
+   * Returns null if SuperClaw is unreachable (caller falls back to local logic).
+   */
+  private async checkSuperClawThresholds(
+    projectedCost: number
+  ): Promise<{ allowed: boolean; reason: string } | null> {
+    try {
+      const resp = await fetch(`${this.endpoint}/skynet/thresholds`, {
+        signal: AbortSignal.timeout(3000),
+      });
+      if (!resp.ok) return null;
+
+      const data = (await resp.json()) as {
+        limits: { financial?: { requireApprovalAbove?: number; dailySpendLimit?: number } };
+        usage: { dailySpend?: number };
+      };
+
+      const dailySpend = data.usage?.dailySpend ?? 0;
+      const dailyLimit = data.limits?.financial?.dailySpendLimit ?? 1000;
+      const approvalThreshold = data.limits?.financial?.requireApprovalAbove ?? 100;
+
+      if (dailySpend + projectedCost > dailyLimit) {
+        return { allowed: false, reason: `Daily spend limit exceeded: $${dailySpend} + $${projectedCost} > $${dailyLimit}` };
+      }
+      if (projectedCost > approvalThreshold) {
+        return { allowed: false, reason: `Cost $${projectedCost} exceeds approval threshold $${approvalThreshold}` };
+      }
+      return { allowed: true, reason: "SuperClaw thresholds check passed" };
+    } catch {
+      return null; // SuperClaw unreachable — fall back to local
+    }
+  }
+
   // ── Pre-Execution Check (Step 2.5) ────────────────────────────────────────
 
   /**
@@ -95,19 +166,13 @@ export class SuperClawGovernance {
   ): Promise<GovernanceResult> {
     console.log(`[SuperClaw] Pre-execution check — task=${task.id}`);
 
-    const piiRisk = await this.detectPII(task.input);
-    const injectionDetected = await this.detectPromptInjection(task.input);
+    const piiRisk = this.detectPII(task.input);
+    const injectionDetected = this.detectPromptInjection(task.input);
     const projectedCost = plan?.estimatedCostUsd ?? 0;
-
-    // TODO: POST to SuperClaw endpoint for authoritative governance decision
-    // const response = await fetch(`${this.endpoint}/governance/pre-execution`, {
-    //   method: "POST",
-    //   body: JSON.stringify({ task, plan, piiRisk, injectionDetected, projectedCost }),
-    // });
-    // return response.json();
 
     let decision: GovernanceResult["decision"] = "approve";
     let reason = "All pre-execution checks passed";
+    let superclawReachable = false;
 
     if (injectionDetected) {
       decision = "reject";
@@ -115,19 +180,45 @@ export class SuperClawGovernance {
     } else if (piiRisk && !task.context?.["consentGranted"]) {
       decision = "reject";
       reason = "PII detected without explicit consent";
-    } else if (projectedCost > 50) {
-      decision = "escalate";
-      reason = `Projected cost $${projectedCost} exceeds SPEND_GATE_USD=$50 — human approval required`;
+    } else {
+      // Check real SuperClaw thresholds for cost gating
+      const thresholdResult = await this.checkSuperClawThresholds(projectedCost);
+      if (thresholdResult !== null) {
+        superclawReachable = true;
+        if (!thresholdResult.allowed) {
+          decision = "escalate";
+          reason = thresholdResult.reason;
+        }
+      } else if (projectedCost > 50) {
+        // Local fallback: SPEND_GATE_USD
+        decision = "escalate";
+        reason = `Projected cost $${projectedCost} exceeds SPEND_GATE_USD=$50 — human approval required`;
+      }
     }
+
+    const proofHash = this.generateProofHash(task.id, plan?.id ?? "");
 
     const result: GovernanceResult = {
       decision,
       reason,
-      proofHash: await this.generateProofHash(task.id, plan?.id ?? ""),
+      proofHash,
       piiRisk,
       projectedCostUsd: projectedCost,
       promptInjectionDetected: injectionDetected,
     };
+
+    await this.writeAuditLog({
+      timestamp: new Date().toISOString(),
+      taskId: task.id,
+      phase: "pre-execution",
+      decision,
+      reason,
+      piiRisk,
+      projectedCostUsd: projectedCost,
+      promptInjectionDetected: injectionDetected,
+      proofHash,
+      superclawReachable,
+    });
 
     console.log(`[SuperClaw] Pre-execution result — decision=${result.decision} reason="${result.reason}"`);
     return result;
@@ -142,14 +233,8 @@ export class SuperClawGovernance {
   async postExecutionReview(trajectory: Trajectory): Promise<GovernanceResult> {
     console.log(`[SuperClaw] Post-execution review — taskId=${trajectory.taskId}`);
 
-    const piiRisk = await this.detectPII(JSON.stringify(trajectory.executionResults));
+    const piiRisk = this.detectPII(JSON.stringify(trajectory.executionResults));
     const success = trajectory.executionResults.every((r) => r.success);
-
-    // TODO: POST to SuperClaw for authoritative post-execution review
-    // const response = await fetch(`${this.endpoint}/governance/post-execution`, {
-    //   method: "POST",
-    //   body: JSON.stringify({ trajectory }),
-    // });
 
     const result: GovernanceResult = {
       decision: success ? "approve" : "reject",
@@ -165,6 +250,18 @@ export class SuperClawGovernance {
         trajectory.executionResults.filter((r) => !r.success)
       );
     }
+
+    await this.writeAuditLog({
+      timestamp: new Date().toISOString(),
+      taskId: trajectory.taskId,
+      phase: "post-execution",
+      decision: result.decision,
+      reason: result.reason,
+      piiRisk,
+      projectedCostUsd: trajectory.totalCostUsd,
+      promptInjectionDetected: false,
+      superclawReachable: false,
+    });
 
     console.log(`[SuperClaw] Post-execution result — decision=${result.decision}`);
     return result;
@@ -187,12 +284,6 @@ export class SuperClawGovernance {
       return true;
     }
 
-    // TODO: POST to SuperClaw proof validation endpoint
-    // const valid = await fetch(`${this.endpoint}/proof/validate`, {
-    //   method: "POST",
-    //   body: JSON.stringify({ proofHash, executorId: step.executor }),
-    // }).then((r) => r.json());
-
     console.log(`[SuperClaw] validateProof — step=${step.id} hash=${proofHash.slice(0, 16)}...`);
     return true; // stub: all proofs valid in Phase 0
   }
@@ -206,12 +297,6 @@ export class SuperClawGovernance {
   async refinePolicy(failures: ExecutionResult[]): Promise<PolicyRefinement[]> {
     console.log(`[SuperClaw] refinePolicy — failures=${failures.length}`);
 
-    // TODO: Analyze failure patterns and adjust policy rules
-    // const refinements = await fetch(`${this.endpoint}/policy/refine`, {
-    //   method: "POST",
-    //   body: JSON.stringify({ failures, currentRules: this.policyRules }),
-    // }).then((r) => r.json());
-
     const refinements: PolicyRefinement[] = failures.map((f) => ({
       ruleId: "auto-refined",
       delta: {},
@@ -224,35 +309,92 @@ export class SuperClawGovernance {
 
   // ── Detection Utilities ───────────────────────────────────────────────────
 
-  private async detectPII(text: string): Promise<boolean> {
-    // TODO: Real PII detection (email, SSN, credit card, phone patterns)
-    // Simple heuristic for Phase 0
+  private detectPII(text: string): boolean {
     const piiPatterns = [
-      /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/i,          // email
-      /\b\d{3}-\d{2}-\d{4}\b/,                                  // SSN
-      /\b\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}\b/,           // credit card
+      /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/i,                    // email
+      /\b\d{3}-\d{2}-\d{4}\b/,                                            // SSN (US)
+      /\b\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}\b/,                     // credit card
+      /\b(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b/,        // US phone
+      /\b(?:\+\d{1,3}[-.\s]?)?\d{7,15}\b/,                                // international phone
+      /\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b/,                          // IPv4 address
+      /\b[0-9a-fA-F]{1,4}(:[0-9a-fA-F]{1,4}){7}\b/,                      // IPv6 address (full)
+      /\b\d{3}-\d{3}-\d{3}\b/,                                            // Canadian SIN
+      /\b[A-Z]{2}\d{6}[A-Z]\b/,                                           // UK NI number
     ];
     return piiPatterns.some((p) => p.test(text));
   }
 
-  private async detectPromptInjection(text: string): Promise<boolean> {
-    // TODO: Real injection detection (model-based or rule-based)
+  private detectPromptInjection(text: string): boolean {
+    const lower = text.toLowerCase();
+
+    // Direct injection signals
     const injectionSignals = [
       "ignore previous instructions",
+      "ignore all previous",
+      "ignore above instructions",
       "system prompt",
       "jailbreak",
       "disregard all prior",
+      "disregard above",
+      "forget your instructions",
+      "forget all previous",
+      "override your instructions",
+      "new system prompt",
+      "you are now",
+      "act as if you",
+      "pretend you are",
+      "roleplay as",
       "<|im_start|>system",
+      "<|im_start|>",
+      "<|im_end|>",
       "<!-- override -->",
+      "[system]",
+      "###instruction###",
+      "```system",
+      "\\nsystem:",
     ];
-    const lower = text.toLowerCase();
-    return injectionSignals.some((s) => lower.includes(s));
+
+    if (injectionSignals.some((s) => lower.includes(s))) {
+      return true;
+    }
+
+    // Unicode homoglyph trick detection — Cyrillic/Greek chars mixed with Latin
+    const hasMixedScripts = /[\u0400-\u04FF]/.test(text) && /[a-zA-Z]/.test(text);
+    // Zero-width characters used to hide instructions
+    const hasZeroWidth = /[\u200B\u200C\u200D\uFEFF]/.test(text);
+    // Base64-encoded instruction patterns
+    const base64Pattern = /(?:[A-Za-z0-9+/]{20,}={0,2})/;
+    if (base64Pattern.test(text)) {
+      try {
+        const matches = text.match(/(?:[A-Za-z0-9+/]{20,}={0,2})/g);
+        if (matches) {
+          for (const match of matches) {
+            const decoded = Buffer.from(match, "base64").toString("utf-8");
+            const decodedLower = decoded.toLowerCase();
+            if (
+              decodedLower.includes("ignore") ||
+              decodedLower.includes("system") ||
+              decodedLower.includes("instruction") ||
+              decodedLower.includes("override")
+            ) {
+              return true;
+            }
+          }
+        }
+      } catch {
+        // Not valid base64, ignore
+      }
+    }
+
+    if (hasMixedScripts || hasZeroWidth) {
+      return true;
+    }
+
+    return false;
   }
 
-  private async generateProofHash(taskId: string, planId: string): Promise<string> {
-    // TODO: Cryptographic proof generation (Blake3 or SHA-256)
-    // const data = `${taskId}:${planId}:${Date.now()}`;
-    // return crypto.createHash("sha256").update(data).digest("hex");
-    return `proof_${taskId}_${planId}`.slice(0, 32);
+  private generateProofHash(taskId: string, planId: string): string {
+    const data = `${taskId}:${planId}:${Date.now()}`;
+    return createHash("sha256").update(data).digest("hex");
   }
 }

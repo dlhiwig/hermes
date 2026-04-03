@@ -141,6 +141,24 @@ pub fn sona_record_trajectory(embedding: Vec<f32>, reward: f32) -> bool {
     true
 }
 
+/// Return the total number of trajectories recorded by the SonaEngine.
+pub fn get_trajectory_count() -> u64 {
+    let engine = match SONA_ENGINE.lock() {
+        Ok(e) => e,
+        Err(_) => return 0,
+    };
+    engine.stats().trajectories_recorded
+}
+
+/// Return a routing table version derived from patterns learned.
+pub fn get_routing_table_version() -> u32 {
+    let engine = match SONA_ENGINE.lock() {
+        Ok(e) => e,
+        Err(_) => return 0,
+    };
+    engine.stats().patterns_learned as u32
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -204,5 +222,16 @@ mod tests {
     fn test_sona_record_trajectory_success() {
         let embedding = vec![0.1_f32; 256];
         assert!(sona_record_trajectory(embedding, 0.85));
+    }
+
+    #[test]
+    fn test_get_trajectory_count() {
+        // Just verify it doesn't panic — count depends on singleton state
+        let _count = get_trajectory_count();
+    }
+
+    #[test]
+    fn test_get_routing_table_version() {
+        let _version = get_routing_table_version();
     }
 }
