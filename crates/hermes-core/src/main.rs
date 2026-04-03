@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tracing::info;
 
-const SONA_PORT: u16 = 18804;
+const SONA_PORT: u16 = 18805;
 
 // ── Shared State ────────────────────────────────────────────────────────────
 

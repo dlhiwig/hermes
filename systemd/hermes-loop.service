@@ -1,26 +1,25 @@
 [Unit]
-Description=Hermes SONA Daemon — Self-Optimizing Neural Architecture
+Description=Hermes Loop — 8-Step Recursive Self-Learning Loop
 Documentation=https://github.com/dlhiwig/hermes
-After=network.target
-Wants=network.target
+After=network.target hermes-sona.service
+Wants=hermes-sona.service
 
 [Service]
 Type=simple
 User=toba
 WorkingDirectory=/home/toba/hermes
 Environment=NODE_ENV=production
-Environment=SONA_PORT=18804
 EnvironmentFile=-/home/toba/hermes/.env
-ExecStart=/home/linuxbrew/.linuxbrew/bin/node --experimental-vm-modules dist/brain/sona.js
+ExecStart=/home/linuxbrew/.linuxbrew/bin/node --experimental-vm-modules dist/main.js
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=hermes-sona
+SyslogIdentifier=hermes-loop
 
 # Kill switch enforcement via resource limits
 LimitNOFILE=65536
-MemoryMax=2G
+MemoryMax=4G
 CPUQuota=200%
 
 [Install]

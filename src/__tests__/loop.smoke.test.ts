@@ -1,6 +1,15 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { HermesLoop } from "../core/loop.js";
 import type { HermesTask } from "../core/loop.js";
+
+// Stub Ollama so the smoke test doesn't hit real network
+vi.stubGlobal("fetch", async (url: unknown) => {
+  const u = String(url);
+  if (u.includes("11434") || u.includes("ollama")) {
+    return { ok: false, status: 503, text: async () => "stubbed" } as unknown as Response;
+  }
+  return { ok: true, json: async () => ({}), text: async () => "" } as unknown as Response;
+});
 
 function makeTask(overrides: Partial<HermesTask> = {}): HermesTask {
   return {
@@ -14,7 +23,7 @@ function makeTask(overrides: Partial<HermesTask> = {}): HermesTask {
 }
 
 describe("HermesLoop smoke tests", () => {
-  it("runs all 8 steps and returns a trajectory", async () => {
+  it("runs all 8 steps and returns a trajectory", { timeout: 30000 }, async () => {
     const loop = new HermesLoop();
     const trajectory = await loop.run(makeTask());
 

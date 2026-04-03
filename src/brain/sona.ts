@@ -2,7 +2,7 @@
  * SONA Daemon Integration
  *
  * SONA is Hermes's self-optimizing GNN brain. It runs as a background daemon
- * on port 18804 and exposes:
+ * on port 18805 and exposes:
  *  - Trajectory recording
  *  - GNN model updates (Q-Learning / PPO / SARSA)
  *  - Routing table optimization (<1ms target)
@@ -13,7 +13,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "http";
 import type { Trajectory, RewardSignal, HermesTask, HermesPlan, RoutingRecommendation } from "../core/loop.js";
 import { EWCPlusPlus } from "./ewc.js";
 
-const SONA_PORT = parseInt(process.env["SONA_PORT"] ?? "18804", 10);
+const SONA_PORT = parseInt(process.env["SONA_PORT"] ?? "18805", 10);
 const SONA_OPTIMIZE_INTERVAL_MS = 5_000; // every 5 seconds
 const SONA_GNN_UPDATE_INTERVAL_MS = 30_000; // every 30 seconds
 
