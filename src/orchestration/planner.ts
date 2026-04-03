@@ -128,16 +128,21 @@ export class HermesPlanner {
       blockers.push(`Recursion depth ${task.recursionDepth} exceeds max ${MAX_RECURSION_DEPTH}`);
     }
 
-    // Gate 3: Retrieved context quality — at least one doc with score > 0.5
-    const highQualityDocs = context.filter((c) => c.score > 0.5);
-    if (highQualityDocs.length > 0) {
-      checklist.push(`High-quality context docs: ${highQualityDocs.length}/${context.length} ✓`);
-    } else if (context.length === 0) {
-      blockers.push("No context documents retrieved");
+    // Gate 3: Retrieved context quality
+    // Empty context is OK (e.g. Phase 1 when RuVector is empty) — only block
+    // when documents ARE present but all have garbage scores (< 0.2).
+    if (context.length === 0) {
+      checklist.push("No context docs (empty RuVector) — proceeding without context ✓");
+      console.warn("[gstack] Warning: no context documents retrieved — RuVector may be empty");
     } else {
-      blockers.push(
-        `All ${context.length} context docs have score ≤ 0.5 (best: ${Math.max(...context.map((c) => c.score)).toFixed(2)})`
-      );
+      const usableDocs = context.filter((c) => c.score >= 0.2);
+      if (usableDocs.length > 0) {
+        checklist.push(`Usable context docs (score ≥ 0.2): ${usableDocs.length}/${context.length} ✓`);
+      } else {
+        blockers.push(
+          `All ${context.length} context docs have score < 0.2 (best: ${Math.max(...context.map((c) => c.score)).toFixed(2)}) — garbage context is worse than none`
+        );
+      }
     }
 
     const passed = blockers.length === 0;
