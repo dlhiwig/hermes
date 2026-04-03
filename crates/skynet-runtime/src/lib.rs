@@ -9,16 +9,12 @@
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 
-use ruvector_sona::{SonaConfig, SonaEngine};
+use ruvector_sona::SonaEngine;
 
 // ── Singleton SonaEngine ─────────────────────────────────────────────────────
 
 static SONA_ENGINE: std::sync::LazyLock<Mutex<SonaEngine>> = std::sync::LazyLock::new(|| {
-    Mutex::new(SonaEngine::new(SonaConfig {
-        hidden_dim: 256,
-        embedding_dim: 256,
-        ..Default::default()
-    }))
+    Mutex::new(SonaEngine::new(256))
 });
 
 // ── Types ────────────────────────────────────────────────────────────────────
