@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "hermes": {
+      "command": "npx",
+      "args": ["tsx", "src/mcp/server.ts"],
+      "env": {
+        "SONA_PORT": "18805"
+      }
+    }
+  }
+}

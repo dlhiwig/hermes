@@ -12,6 +12,7 @@
 import { HermesLoop } from "./core/loop.js";
 import { TelegramInterface } from "./interfaces/telegram.js";
 import { SonaDaemon } from "./brain/sona.js";
+import { startMcpServer } from "./mcp/server.js";
 
 // ── Kill Switches (mirrored from loop.ts for banner display) ─────────────────
 const KILL_SWITCHES = {
@@ -23,6 +24,7 @@ const KILL_SWITCHES = {
 
 const VERSION = "0.1.0";
 const SONA_PORT = parseInt(process.env["SONA_PORT"] ?? "18805", 10);
+const MCP_PORT = parseInt(process.env["HERMES_MCP_PORT"] ?? "18806", 10);
 
 // ── Banner ───────────────────────────────────────────────────────────────────
 
@@ -46,6 +48,7 @@ function printBanner(): void {
 ║    SPEND_GATE_USD             = $${String(KILL_SWITCHES.SPEND_GATE_USD).padEnd(4)}                       ║
 ║    MAX_LOOP_ITERATIONS/HOUR   = ${String(KILL_SWITCHES.MAX_LOOP_ITERATIONS_PER_HOUR).padEnd(5)}                       ║
 ║  SONA Port:                     ${String(SONA_PORT).padEnd(5)}                       ║
+║  MCP  Port:                     ${String(MCP_PORT).padEnd(5)}                       ║
 ╚══════════════════════════════════════════════════════════════╝
 `);
 }
@@ -64,7 +67,11 @@ async function main(): Promise<void> {
   sona.start();
   console.log(`[Main] SONA daemon started on :${SONA_PORT}`);
 
-  // 3. Start Telegram polling
+  // 3. Start MCP server
+  const mcpServer = startMcpServer(loop);
+  console.log(`[Main] MCP server started on :${MCP_PORT}`);
+
+  // 4. Start Telegram polling
   const telegram = new TelegramInterface(loop);
   const telegramPromise = telegram.startPolling();
   console.log("[Main] Telegram polling started");
@@ -83,6 +90,9 @@ async function main(): Promise<void> {
 
     telegram.stopPolling();
     console.log("[Main] Telegram polling stopped");
+
+    mcpServer.close();
+    console.log("[Main] MCP server stopped");
 
     sona.stop();
     console.log("[Main] SONA daemon stopped");
