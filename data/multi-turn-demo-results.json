@@ -1,24 +1,25 @@
 {
   "demo": "multi-turn-self-improvement",
-  "runAt": "2026-04-03T06:11:03.716Z",
+  "mode": "MOCK",
+  "runAt": "2026-04-03T07:09:36.103Z",
   "taskCount": 5,
   "results": [
     {
-      "taskId": "517987ff-6524-484b-99dd-7993d34d4e9f",
+      "taskId": "66b095dc-fc77-45ac-9b81-f6553e56c491",
       "input": "Categorize this expense: $45 coffee shop",
       "rewardScore": 1,
-      "durationMs": 289818,
-      "executionSteps": 3,
+      "durationMs": 35,
+      "executionSteps": 2,
       "successRate": 1,
       "pattern": null,
       "patternSamples": 0,
       "patternSuccessRate": 0
     },
     {
-      "taskId": "91f62cf3-d364-467f-85c6-abf1ef801cff",
+      "taskId": "07ea8890-ec67-4143-962f-7bb620b1fa64",
       "input": "Categorize this expense: $38 coffee and snacks",
       "rewardScore": 1,
-      "durationMs": 320174,
+      "durationMs": 6,
       "executionSteps": 2,
       "successRate": 1,
       "pattern": null,
@@ -26,10 +27,10 @@
       "patternSuccessRate": 0
     },
     {
-      "taskId": "99b7079d-8007-4bce-a2b7-261ae9b36a2b",
+      "taskId": "45419754-4728-4fcf-958d-0cacbdafd93e",
       "input": "Categorize this expense: $52 lunch meeting",
       "rewardScore": 1,
-      "durationMs": 320329,
+      "durationMs": 5,
       "executionSteps": 2,
       "successRate": 1,
       "pattern": null,
@@ -37,10 +38,10 @@
       "patternSuccessRate": 0
     },
     {
-      "taskId": "bbaa2d76-de55-468d-8648-c9dc900e343c",
+      "taskId": "d84822a8-620c-4322-bf8e-7c788283ad88",
       "input": "Categorize this expense: $29 coffee shop visit",
       "rewardScore": 1,
-      "durationMs": 318342,
+      "durationMs": 5,
       "executionSteps": 2,
       "successRate": 1,
       "pattern": null,
@@ -48,10 +49,10 @@
       "patternSuccessRate": 0
     },
     {
-      "taskId": "9502e2ab-c1de-45dc-bd5e-a5729e718682",
+      "taskId": "120249e3-30aa-4d5c-9841-2e60ce11e0ff",
       "input": "What pattern have you learned from these 4 coffee/food transactions?",
       "rewardScore": 1,
-      "durationMs": 318915,
+      "durationMs": 5,
       "executionSteps": 2,
       "successRate": 1,
       "pattern": null,
@@ -65,7 +66,7 @@
       "totalSamples": 1,
       "successRate": 1,
       "trajectoryIds": [
-        "517987ff-6524-484b-99dd-7993d34d4e9f"
+        "66b095dc-fc77-45ac-9b81-f6553e56c491"
       ]
     },
     {
@@ -73,7 +74,7 @@
       "totalSamples": 1,
       "successRate": 1,
       "trajectoryIds": [
-        "91f62cf3-d364-467f-85c6-abf1ef801cff"
+        "07ea8890-ec67-4143-962f-7bb620b1fa64"
       ]
     },
     {
@@ -81,7 +82,7 @@
       "totalSamples": 1,
       "successRate": 1,
       "trajectoryIds": [
-        "99b7079d-8007-4bce-a2b7-261ae9b36a2b"
+        "45419754-4728-4fcf-958d-0cacbdafd93e"
       ]
     }
   ]

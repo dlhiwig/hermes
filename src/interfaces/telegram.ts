@@ -3,9 +3,16 @@
  *
  * Receives tasks from Telegram (via OpenClaw plugin or direct bot),
  * normalizes them into HermesTask objects, and feeds into HermesLoop.run().
+ *
+ * Commands:
+ *   /hermes <task>       — Run a task through the 8-step loop
+ *   /hermes-status       — Show SONA stats + top patterns (no task execution)
  */
 
 import { HermesLoop, HermesTask } from "../core/loop.js";
+import { SonaDaemon } from "../brain/sona.js";
+import { SkillEvolution } from "../skills/evolution.js";
+import { HermesMemory } from "../brain/ruvector.js";
 import { randomUUID } from "crypto";
 
 const BOT_TOKEN = "8596335577:AAFzNixwLFEWMsvmJa6lKUw40aujQ70KFQ0";
@@ -23,11 +30,16 @@ export interface TelegramMessage {
 
 export class TelegramInterface {
   private loop: HermesLoop;
+  private sona: SonaDaemon;
+  private skillEvolution: SkillEvolution;
   private offset = 0;
   private polling = false;
 
-  constructor(loop: HermesLoop) {
+  constructor(loop: HermesLoop, sona?: SonaDaemon) {
     this.loop = loop;
+    this.sona = sona ?? new SonaDaemon();
+    const memory = new HermesMemory();
+    this.skillEvolution = new SkillEvolution(memory);
   }
 
   /**
@@ -110,9 +122,26 @@ export class TelegramInterface {
   }
 
   async handleMessage(msg: TelegramMessage): Promise<void> {
+    const text = msg.text.trim();
+
+    // Handle /hermes-status command
+    if (text === "/hermes-status" || text === "/hermes_status") {
+      await this.handleStatusCommand(msg.chatId);
+      return;
+    }
+
+    // Strip /hermes prefix if present
+    let taskInput = text;
+    if (text.startsWith("/hermes ")) {
+      taskInput = text.slice(8).trim();
+    } else if (text === "/hermes") {
+      await this.sendMessage(msg.chatId, "Usage: /hermes <task>\nExample: /hermes Categorize this expense: $45 coffee shop");
+      return;
+    }
+
     const task: HermesTask = {
       id: randomUUID(),
-      input: msg.text,
+      input: taskInput,
       context: {
         chatId: msg.chatId,
         userId: msg.userId,
@@ -133,20 +162,80 @@ export class TelegramInterface {
       const cost = trajectory.totalCostUsd.toFixed(2);
       const pattern = trajectory.rewardSignal?.taskPattern ?? "unknown";
 
-      const resultText = [
+      // Step completion status
+      const totalSteps = trajectory.executionResults.length;
+      const passedSteps = trajectory.executionResults.filter((r) => r.success).length;
+      const failedSteps = totalSteps - passedSteps;
+
+      const stepStatus = totalSteps > 0
+        ? `${passedSteps}/${totalSteps} passed` + (failedSteps > 0 ? ` (${failedSteps} failed)` : "")
+        : "no steps";
+
+      // Evaluate for patterns
+      const evaluation = await this.skillEvolution.evaluate(trajectory);
+      const topPatterns = this.skillEvolution.getTopPatterns(2, 1);
+
+      const lines = [
         "🧠 Hermes complete",
-        `• Score: ${score}`,
+        `• Steps: ${stepStatus}`,
+        `• Reward: ${score}`,
         `• Duration: ${durationS}s`,
         `• Cost: $${cost}`,
         `• Pattern: ${pattern}`,
-      ].join("\n");
+      ];
 
-      await this.sendMessage(msg.chatId, resultText);
+      if (topPatterns.length > 0) {
+        lines.push("", "📊 Top patterns:");
+        for (const p of topPatterns) {
+          lines.push(`  • "${p.pattern.slice(0, 40)}" (${p.totalSamples} samples, ${(p.successRate * 100).toFixed(0)}%)`);
+        }
+      }
+
+      await this.sendMessage(msg.chatId, lines.join("\n"));
       console.log(`[TelegramInterface] Task complete — score=${score}`);
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
       console.error(`[TelegramInterface] Task error — id=${task.id}`, err);
       await this.sendMessage(msg.chatId, `⚠️ Hermes error: ${errorMsg}`);
+    }
+  }
+
+  private async handleStatusCommand(chatId: number): Promise<void> {
+    try {
+      const stats = await this.sona.getStats();
+      const topPatterns = this.skillEvolution.getTopPatterns(3, 1);
+
+      const lines = [
+        "📡 Hermes Status",
+        "",
+        "SONA:",
+      ];
+
+      if (stats.local) {
+        const local = stats.local as Record<string, unknown>;
+        lines.push(`  • Buffer: ${local.trajectoryBufferSize ?? 0} trajectories`);
+        lines.push(`  • Queue: ${local.trajectoryQueueSize ?? 0} pending`);
+        lines.push(`  • EWC steps: ${local.ewcStepsPending ?? 0}`);
+        lines.push(`  • Routing v${local.routingTableVersion ?? 0} (${local.routingTableEntries ?? 0} entries)`);
+      } else {
+        for (const [k, v] of Object.entries(stats)) {
+          if (k !== "error") lines.push(`  • ${k}: ${v}`);
+        }
+      }
+
+      if (topPatterns.length > 0) {
+        lines.push("", "Top patterns:");
+        for (const p of topPatterns) {
+          lines.push(`  • "${p.pattern.slice(0, 40)}" — ${p.totalSamples} samples, ${(p.successRate * 100).toFixed(0)}%`);
+        }
+      } else {
+        lines.push("", "No patterns tracked yet.");
+      }
+
+      await this.sendMessage(chatId, lines.join("\n"));
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      await this.sendMessage(chatId, `⚠️ Status error: ${errorMsg}`);
     }
   }
 
