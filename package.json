@@ -8,7 +8,8 @@
     "build": "tsc --project tsconfig.json",
     "start": "node dist/main.js",
     "loop:run": "tsx src/core/loop.ts",
-    "sona:daemon": "tsx src/brain/sona.ts"
+    "sona:daemon": "tsx src/brain/sona.ts",
+    "test": "vitest run"
   },
   "dependencies": {
     "@ruvector/ruvllm": "2.5.4",
