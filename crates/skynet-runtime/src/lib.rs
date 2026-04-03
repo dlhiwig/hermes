@@ -7,6 +7,19 @@
 //!   - proof_validate():     verify capability proof hash
 
 use serde::{Deserialize, Serialize};
+use std::sync::Mutex;
+
+use ruvector_sona::{SonaConfig, SonaEngine};
+
+// ── Singleton SonaEngine ─────────────────────────────────────────────────────
+
+static SONA_ENGINE: std::sync::LazyLock<Mutex<SonaEngine>> = std::sync::LazyLock::new(|| {
+    Mutex::new(SonaEngine::new(SonaConfig {
+        hidden_dim: 256,
+        embedding_dim: 256,
+        ..Default::default()
+    }))
+});
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -67,6 +80,9 @@ pub fn execute_with_proof(task: &ExecutionTask) -> ExecutionResult {
 
 /// Online EWC++ Fisher update — runs in <1ms on each trajectory step.
 /// Called from SONA instant loop (Step 5).
+///
+/// For the full SonaEngine EWC++ equivalent, see `ruvector_sona::EwcPlusPlus`
+/// which provides online Fisher accumulation with per-task consolidation.
 pub fn ewc_record_step(steps: &[TrajectoryStep], lambda: f32, decay: f32) -> EwcPenaltyResult {
     let mut total_penalty = 0.0f32;
     let param_count = steps.len();
@@ -113,6 +129,20 @@ fn generate_proof_hash(step_id: &str, executor: &str) -> String {
     let data = format!("{step_id}:{executor}");
     let hash = blake3::hash(data.as_bytes());
     hash.to_hex().to_string()
+}
+
+/// Record a trajectory into the SonaEngine for learning.
+/// Uses begin_trajectory → add_step → end_trajectory pipeline.
+/// Returns true on success.
+pub fn sona_record_trajectory(embedding: Vec<f32>, reward: f32) -> bool {
+    let engine = match SONA_ENGINE.lock() {
+        Ok(e) => e,
+        Err(_) => return false,
+    };
+    let mut builder = engine.begin_trajectory(embedding.clone());
+    builder.add_step(embedding, vec![], reward);
+    engine.end_trajectory(builder, reward);
+    true
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -172,5 +202,11 @@ mod tests {
     fn test_proof_wrong_executor_fails() {
         let hash = generate_proof_hash("step-1", "skynetRust");
         assert!(!proof_validate(&hash, "step-1", "voltAgent"));
+    }
+
+    #[test]
+    fn test_sona_record_trajectory_success() {
+        let embedding = vec![0.1_f32; 256];
+        assert!(sona_record_trajectory(embedding, 0.85));
     }
 }

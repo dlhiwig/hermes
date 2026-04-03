@@ -102,6 +102,54 @@ export class ReasoningBank {
   }
 
   /**
+   * Generate a valid Superpowers SKILL.md from a distilled pattern.
+   * Output follows the format required by .claude/skills/ auto-routing.
+   */
+  emitSkillMd(pattern: DistilledPattern): string {
+    const kebabName = this.toSkillName(pattern.pattern);
+    const humanName = kebabName
+      .split("-")
+      .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+      .join(" ");
+
+    return `---
+name: ${kebabName}
+description: Use when handling ${pattern.taskType} tasks with input matching "${pattern.pattern.slice(0, 100)}"
+---
+
+# ${humanName}
+
+## Overview
+Auto-distilled skill encoding the "${pattern.pattern}" execution strategy.
+Success rate ${(pattern.successRate * 100).toFixed(1)}% over ${pattern.sampleCount} samples.
+
+## When to Use
+- Task type is \`${pattern.taskType}\` and input matches "${pattern.pattern}"
+- Historical success rate exceeds ${(DISTILL_SUCCESS_THRESHOLD * 100).toFixed(0)}%
+- When NOT to use: tasks outside the \`${pattern.taskType}\` domain or with reward signals below 0.5
+
+## Core Pattern
+1. Classify incoming task against the "${pattern.pattern}" signature.
+2. Route to the executor validated by this pattern's trajectory history.
+3. Execute with SuperClaw pre-check governance gate.
+4. Validate output via SuperClaw post-check.
+5. Record trajectory back to SONA for continuous refinement.
+
+## Quick Reference
+| Metric | Value |
+|--------|-------|
+| Success Rate | ${(pattern.successRate * 100).toFixed(1)}% |
+| Avg Latency | ${pattern.avgLatencyMs.toFixed(0)}ms |
+| Avg Cost | $${pattern.avgCostUsd.toFixed(4)} |
+| Samples | ${pattern.sampleCount} |
+
+## Common Mistakes
+- Don't use for tasks outside ${pattern.taskType} domain
+- Reward signals below 0.5 indicate poor fit
+`;
+  }
+
+  /**
    * Distill a pattern into a Superpowers-format SKILL.md + RVF container.
    * Writes to skills/auto/<skillName>/SKILL.md and is immediately available for routing.
    */
@@ -113,97 +161,44 @@ export class ReasoningBank {
     if (!p) return null;
 
     const skillName = this.toSkillName(taskPattern);
-    const skillMd = this.generateSkillMd(skillName, p, representativeTrajectory);
 
-    // Write SKILL.md to skills/auto/<skillName>/SKILL.md
-    const skillDir = path.join(this.skillsDir, skillName);
-    await fs.mkdir(skillDir, { recursive: true });
-    await fs.writeFile(path.join(skillDir, "SKILL.md"), skillMd);
+    // Emit Superpowers SKILL.md when success threshold is met
+    if (p.successRate >= DISTILL_SUCCESS_THRESHOLD) {
+      const skillMd = this.emitSkillMd(p);
+      const skillDir = path.join(this.skillsDir, skillName);
+      await fs.mkdir(skillDir, { recursive: true });
+      const skillMdPath = path.join(skillDir, "SKILL.md");
+      await fs.writeFile(skillMdPath, skillMd);
+      console.log(`[ReasoningBank] Wrote SKILL.md → ${skillMdPath}`);
+    }
 
     // TODO: Package as RVF container (npx ruvector pack <skillName>)
-    const rvfPath = path.join(skillDir, `${skillName}.rvf`);
+    const rvfPath = path.join(this.skillsDir, skillName, `${skillName}.rvf`);
 
     p.rvfContainerPath = rvfPath;
     p.lastUpdatedAt = new Date();
     this.patterns.set(taskPattern, p);
 
     console.log(`[ReasoningBank] Distilled skill: ${skillName} (successRate=${p.successRate.toFixed(3)})`);
-    console.log(`[ReasoningBank] Wrote SKILL.md → ${path.join(skillDir, "SKILL.md")}`);
 
     return p;
-  }
-
-  private generateSkillMd(
-    skillName: string,
-    pattern: DistilledPattern,
-    trajectory: Trajectory
-  ): string {
-    const executors = trajectory.plan?.steps.map((s) => s.executor).filter((v, i, a) => a.indexOf(v) === i).join(", ") ?? "voltAgent";
-    const stepDescriptions = trajectory.plan?.steps.map((s) => s.description).join("; ") ?? "single-step execution";
-
-    return `---
-name: ${skillName}
-description: >-
-  Use when the task matches pattern "${pattern.pattern}" with ${pattern.taskType} workloads
-  requiring ${executors} execution.
----
-
-# ${skillName}
-
-## Overview
-
-Auto-distilled skill for "${pattern.pattern}" tasks. Extracted from ${pattern.sampleCount} observed
-trajectories with a ${(pattern.successRate * 100).toFixed(1)}% success rate. This skill encapsulates
-the optimal execution strategy discovered by the Hermes SONA loop.
-
-## When to Use
-
-- Task input matches or resembles: \`${pattern.pattern}\`
-- Task type is \`${pattern.taskType}\`
-- Preferred when similar patterns have historically succeeded with ${executors}
-
-## Core Pattern
-
-1. **Classify** the incoming task against the known pattern signature.
-2. **Route** to executor(s): ${executors}.
-3. **Execute** the plan steps: ${stepDescriptions}.
-4. **Validate** output via SuperClaw governance post-check.
-5. **Record** trajectory back to SONA for continuous improvement.
-
-## Quick Reference
-
-| Metric | Value |
-|--------|-------|
-| Success rate | ${(pattern.successRate * 100).toFixed(1)}% |
-| Avg latency | ${pattern.avgLatencyMs.toFixed(0)}ms |
-| Avg cost | $${pattern.avgCostUsd.toFixed(4)}/run |
-| Sample count | ${pattern.sampleCount} |
-| Task type | ${pattern.taskType} |
-| Executor(s) | ${executors} |
-| RVF container | ${skillName}.rvf |
-| Distilled at | ${new Date().toISOString()} |
-
-## Common Mistakes
-
-- **Wrong pattern match**: Ensure the task input genuinely matches \`${pattern.pattern}\`
-  before activating this skill. Partial matches may lead to suboptimal routing.
-- **Stale routing**: If success rate drops below ${(DISTILL_SUCCESS_THRESHOLD * 100).toFixed(0)}%,
-  the skill should be re-evaluated or retired.
-- **Ignoring governance**: Always run SuperClaw pre/post checks even for distilled skills.
-  Governance is non-negotiable in the Hermes loop.
-`;
   }
 
   private buildCandidate(taskPattern: string): SkillCandidate | null {
     const p = this.patterns.get(taskPattern);
     if (!p) return null;
+    const skillName = this.toSkillName(taskPattern);
+    const skillMdPath = p.successRate >= DISTILL_SUCCESS_THRESHOLD
+      ? path.join(this.skillsDir, skillName, "SKILL.md")
+      : undefined;
     return {
       pattern: taskPattern,
       successRate: p.successRate,
       sampleTrajectories: [],
-      proposedSkillName: this.toSkillName(taskPattern),
+      proposedSkillName: skillName,
       proposedExecutor: "voltAgent",
       ...(p.rvfContainerPath !== undefined && { rvfContainerPath: p.rvfContainerPath }),
+      ...(skillMdPath !== undefined && { skillMdPath }),
     };
   }
 

@@ -9,6 +9,7 @@
     "start": "node dist/main.js",
     "loop:run": "tsx src/core/loop.ts",
     "sona:daemon": "tsx src/brain/sona.ts",
+    "ledger:run": "tsx src/skills/ledger.ts",
     "test": "vitest run"
   },
   "dependencies": {

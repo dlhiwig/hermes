@@ -107,6 +107,7 @@ export interface SkillCandidate {
   proposedSkillName: string;
   proposedExecutor: string;
   rvfContainerPath?: string;
+  skillMdPath?: string;
 }
 
 export interface GovernanceResult {
