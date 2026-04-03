@@ -9,6 +9,7 @@
  *  - Hyperparameter auto-tuning
  */
 
+import { createServer, type IncomingMessage, type ServerResponse } from "http";
 import type { Trajectory, RewardSignal, HermesTask, HermesPlan, RoutingRecommendation } from "../core/loop.js";
 import { EWCPlusPlus } from "./ewc.js";
 
@@ -107,13 +108,53 @@ export class SonaDaemon {
       );
     }, SONA_GNN_UPDATE_INTERVAL_MS);
 
-    // TODO: Start HTTP server on this.port for external SONA API
-    // const app = express();
-    // app.post("/trajectory", ...)
-    // app.get("/routing-table", ...)
-    // app.get("/health", ...)
-    // app.listen(this.port, () => console.log(`[SONA] Listening on :${this.port}`));
-    console.log(`[SONA] HTTP server stub — would listen on :${this.port}`);
+    const server = createServer((req: IncomingMessage, res: ServerResponse) => {
+      const url = req.url ?? "/";
+      const method = req.method ?? "GET";
+
+      if (method === "GET" && url === "/health") {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({
+          status: "ok",
+          port: this.port,
+          routingTableVersion: this.routingTable.version,
+          bufferSize: this.trajectoryBuffer.length,
+        }));
+        return;
+      }
+
+      if (method === "POST" && url === "/trajectory") {
+        let body = "";
+        req.on("data", (chunk: Buffer) => { body += chunk.toString(); });
+        req.on("end", () => {
+          try {
+            const data = JSON.parse(body) as { trajectory: Trajectory; reward: RewardSignal };
+            this.recordTrajectory(data.trajectory, data.reward).catch((err) =>
+              console.error("[SONA] recordTrajectory error:", err)
+            );
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ ok: true }));
+          } catch {
+            res.writeHead(400, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "invalid json" }));
+          }
+        });
+        return;
+      }
+
+      if (method === "GET" && url === "/routing-table") {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(this.routingTable));
+        return;
+      }
+
+      res.writeHead(404, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "not found" }));
+    });
+
+    server.listen(this.port, () => {
+      console.log(`[SONA] HTTP server listening on :${this.port}`);
+    });
   }
 
   stop(): void {
