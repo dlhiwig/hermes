@@ -1,60 +1,60 @@
 {
   "demo": "multi-turn-self-improvement",
-  "mode": "MOCK",
-  "runAt": "2026-04-03T07:09:36.103Z",
+  "mode": "FAST",
+  "runAt": "2026-04-03T07:12:26.581Z",
   "taskCount": 5,
   "results": [
     {
-      "taskId": "66b095dc-fc77-45ac-9b81-f6553e56c491",
+      "taskId": "d4fcafa9-ab34-45bd-8c52-3b37b6e3c710",
       "input": "Categorize this expense: $45 coffee shop",
-      "rewardScore": 1,
-      "durationMs": 35,
-      "executionSteps": 2,
-      "successRate": 1,
+      "rewardScore": 0,
+      "durationMs": 30020,
+      "executionSteps": 0,
+      "successRate": 0,
       "pattern": null,
       "patternSamples": 0,
       "patternSuccessRate": 0
     },
     {
-      "taskId": "07ea8890-ec67-4143-962f-7bb620b1fa64",
+      "taskId": "93663ff6-e0f2-4db7-8ccc-c25be3f1ca01",
       "input": "Categorize this expense: $38 coffee and snacks",
-      "rewardScore": 1,
-      "durationMs": 6,
-      "executionSteps": 2,
-      "successRate": 1,
+      "rewardScore": 0,
+      "durationMs": 30005,
+      "executionSteps": 0,
+      "successRate": 0,
       "pattern": null,
       "patternSamples": 0,
       "patternSuccessRate": 0
     },
     {
-      "taskId": "45419754-4728-4fcf-958d-0cacbdafd93e",
+      "taskId": "864966c8-52c5-48f8-9f4d-cd0f9059b0b5",
       "input": "Categorize this expense: $52 lunch meeting",
-      "rewardScore": 1,
-      "durationMs": 5,
-      "executionSteps": 2,
-      "successRate": 1,
+      "rewardScore": 0,
+      "durationMs": 30002,
+      "executionSteps": 0,
+      "successRate": 0,
       "pattern": null,
       "patternSamples": 0,
       "patternSuccessRate": 0
     },
     {
-      "taskId": "d84822a8-620c-4322-bf8e-7c788283ad88",
+      "taskId": "4c4a9d9f-fe2a-4577-a6d0-7bbf8de4e908",
       "input": "Categorize this expense: $29 coffee shop visit",
-      "rewardScore": 1,
-      "durationMs": 5,
-      "executionSteps": 2,
-      "successRate": 1,
+      "rewardScore": 0,
+      "durationMs": 30005,
+      "executionSteps": 0,
+      "successRate": 0,
       "pattern": null,
       "patternSamples": 0,
       "patternSuccessRate": 0
     },
     {
-      "taskId": "120249e3-30aa-4d5c-9841-2e60ce11e0ff",
+      "taskId": "ad619bfd-f964-4eb9-bf05-784da9c03265",
       "input": "What pattern have you learned from these 4 coffee/food transactions?",
-      "rewardScore": 1,
-      "durationMs": 5,
-      "executionSteps": 2,
-      "successRate": 1,
+      "rewardScore": 0,
+      "durationMs": 30004,
+      "executionSteps": 0,
+      "successRate": 0,
       "pattern": null,
       "patternSamples": 0,
       "patternSuccessRate": 0
@@ -64,25 +64,25 @@
     {
       "pattern": "categorize this expense: $45 coffee shop",
       "totalSamples": 1,
-      "successRate": 1,
+      "successRate": 0,
       "trajectoryIds": [
-        "66b095dc-fc77-45ac-9b81-f6553e56c491"
+        "d4fcafa9-ab34-45bd-8c52-3b37b6e3c710"
       ]
     },
     {
       "pattern": "categorize this expense: $38 coffee and snacks",
       "totalSamples": 1,
-      "successRate": 1,
+      "successRate": 0,
       "trajectoryIds": [
-        "07ea8890-ec67-4143-962f-7bb620b1fa64"
+        "93663ff6-e0f2-4db7-8ccc-c25be3f1ca01"
       ]
     },
     {
       "pattern": "categorize this expense: $52 lunch meeting",
       "totalSamples": 1,
-      "successRate": 1,
+      "successRate": 0,
       "trajectoryIds": [
-        "45419754-4728-4fcf-958d-0cacbdafd93e"
+        "864966c8-52c5-48f8-9f4d-cd0f9059b0b5"
       ]
     }
   ]

@@ -135,7 +135,7 @@ export interface LoopMetrics {
 
 // ── Step Timeout ─────────────────────────────────────────────────────────────
 
-const STEP_TIMEOUT_MS = 30_000;
+const STEP_TIMEOUT_MS = parseInt(process.env["HERMES_STEP_TIMEOUT_MS"] ?? "120000", 10);
 
 function withTimeout<T>(promise: Promise<T>, stepName: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
