@@ -31,3 +31,5 @@ Thumbs.db
 *.rvf
 sona.db
 trajectories/
+data/governance-audit.jsonl
+data/test-trajectory.json
