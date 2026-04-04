@@ -11,6 +11,12 @@ WorkingDirectory=/home/toba/hermes
 Environment=NODE_ENV=production
 Environment=SONA_PORT=18805
 EnvironmentFile=-/home/toba/hermes/.env
+# Ensure VRAM-warm models are loaded before the loop starts
+# If Ollama isn't running these will fail silently (|| true) without blocking start
+ExecStartPre=-/usr/bin/curl -s -X POST http://127.0.0.1:11434/api/generate \
+  -d '{"model":"dolphin-llama3:8b","prompt":"warmup","stream":false,"options":{"num_predict":1}}'
+ExecStartPre=-/usr/bin/curl -s -X POST http://127.0.0.1:11434/api/generate \
+  -d '{"model":"qwen3.5:9b","prompt":"warmup","stream":false,"options":{"num_predict":1}}'
 ExecStart=/home/linuxbrew/.linuxbrew/bin/node --experimental-vm-modules dist/brain/sona.js
 Restart=on-failure
 RestartSec=5

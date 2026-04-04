@@ -49,6 +49,13 @@ distill_threshold = 0.85
 spawn_threshold = 0.95
 distill_min_samples = 10
 
+[planner]
+# Ordered fallback chain — first model to respond within timeout_ms wins
+# Static decompose is always-available last resort (no Ollama required)
+models = ["dolphin-llama3:8b", "qwen3.5:9b"]
+timeout_ms = 8000
+static_fallback = true
+
 [governance]
 pii_detection_enabled = true
 injection_detection_enabled = true
