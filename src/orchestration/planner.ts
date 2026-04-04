@@ -15,8 +15,11 @@ const execFileAsync = promisify(execFile);
 
 const RUFLO_BIN = "ruflo";
 const OLLAMA_URL = "http://127.0.0.1:11434";
-// T0 model (warm in VRAM) — override with HERMES_PLANNER_MODEL env var
-const OLLAMA_MODEL = process.env["HERMES_PLANNER_MODEL"] ?? "dolphin-llama3:8b";
+// Fallback model chain — first warm model wins; static decompose is the always-available last resort
+const PLANNER_MODEL_CHAIN = (process.env["HERMES_PLANNER_MODELS"] ?? "dolphin-llama3:8b,qwen3.5:9b")
+  .split(",").map((m) => m.trim()).filter(Boolean);
+const OLLAMA_MODEL = PLANNER_MODEL_CHAIN[0] ?? "dolphin-llama3:8b";
+const OLLAMA_PER_MODEL_TIMEOUT_MS = parseInt(process.env["HERMES_PLANNER_TIMEOUT_MS"] ?? "8000", 10);
 const MAX_RECURSION_DEPTH = 5;
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -252,16 +255,20 @@ export class HermesPlanner {
    * Decompose a high-level task into hierarchical sub-goals using deer-flow.
    */
   async deerFlowDecompose(task: HermesTask): Promise<DeerFlowDecomposition> {
-    // Try Ollama Qwen3.5 for intelligent decomposition, fall back to static split
-    try {
-      return await this.ollamaDecompose(task);
-    } catch (err) {
-      console.warn(`[DeerFlow] Ollama decomposition failed, using static fallback: ${err}`);
-      return this.staticDecompose(task);
+    // Try each model in the chain with a per-model timeout; last resort is staticDecompose
+    for (const model of PLANNER_MODEL_CHAIN) {
+      try {
+        return await this.ollamaDecompose(task, model);
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        console.warn(`[DeerFlow] ${model} failed (${reason.slice(0, 80)}) — trying next`);
+      }
     }
+    console.warn("[DeerFlow] All models failed — using static fallback");
+    return this.staticDecompose(task);
   }
 
-  private async ollamaDecompose(task: HermesTask): Promise<DeerFlowDecomposition> {
+  private async ollamaDecompose(task: HermesTask, model = OLLAMA_MODEL): Promise<DeerFlowDecomposition> {
     const prompt = [
       "You are a task decomposition engine. Break the following task into 2-5 concrete sub-goals.",
       "Respond ONLY with valid JSON matching this schema (no markdown, no explanation):",
@@ -274,8 +281,8 @@ export class HermesPlanner {
     const res = await fetch(`${OLLAMA_URL}/api/generate`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      signal: AbortSignal.timeout(30_000), // 30s — fail fast if model is cold
-      body: JSON.stringify({ model: OLLAMA_MODEL, prompt, stream: false }),
+      signal: AbortSignal.timeout(OLLAMA_PER_MODEL_TIMEOUT_MS),
+      body: JSON.stringify({ model, prompt, stream: false }),
     });
 
     if (!res.ok) {

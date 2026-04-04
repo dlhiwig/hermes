@@ -27,6 +27,13 @@ task_buffer_size = 512
 micro_lora_rank = 2
 base_lora_rank = 8
 
+[planner]
+# Model fallback chain — first warm model wins, static decompose is always-available last resort
+# Models must be available in Ollama (dolphin-llama3:8b and qwen3.5:9b are kept warm in VRAM)
+models = ["dolphin-llama3:8b", "qwen3.5:9b"]
+timeout_ms = 8000        # Per-model timeout — fail fast on cold models
+static_fallback = true   # Always fall back to static decompose if all models fail
+
 [superclaw]
 endpoint = "http://localhost:9090"
 spend_gate_usd = 50
