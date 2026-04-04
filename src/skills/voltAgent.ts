@@ -21,7 +21,7 @@ export const VOLT_AGENT_ROLES: Record<string, VoltAgentRole> = {
   "financial-analyst": {
     name: "financial-analyst",
     description: "Categorize and analyze financial transactions",
-    model: "qwen3.5:9b",
+    model: process.env["HERMES_EXECUTOR_MODEL"] ?? "dolphin-llama3:8b",
     sandboxMode: "none",
     instructions:
       "You are a financial analyst agent. Categorize transactions by type (income, expense, transfer, investment). " +
@@ -41,7 +41,7 @@ export const VOLT_AGENT_ROLES: Record<string, VoltAgentRole> = {
   researcher: {
     name: "researcher",
     description: "Search and synthesize information",
-    model: "qwen3.5:27b",
+    model: process.env["HERMES_EXECUTOR_MODEL"] ?? "dolphin-llama3:8b", // warm in VRAM; qwen3.5:27b cold (~60s)
     sandboxMode: "none",
     instructions:
       "You are a research agent. Given a topic or question, synthesize available information into a clear, " +
@@ -50,7 +50,7 @@ export const VOLT_AGENT_ROLES: Record<string, VoltAgentRole> = {
   planner: {
     name: "planner",
     description: "Decompose complex tasks into sub-tasks",
-    model: "qwen3.5:27b",
+    model: process.env["HERMES_EXECUTOR_MODEL"] ?? "dolphin-llama3:8b", // warm in VRAM; qwen3.5:27b cold (~60s)
     sandboxMode: "none",
     instructions:
       "You are a planning agent. Decompose complex tasks into ordered sub-tasks with clear dependencies. " +
@@ -96,6 +96,7 @@ export class VoltAgentExecutor {
     const response = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      signal: AbortSignal.timeout(60_000), // 60s per LLM call
       body: JSON.stringify({
         model: role.model,
         messages,

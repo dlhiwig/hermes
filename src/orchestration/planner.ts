@@ -15,7 +15,8 @@ const execFileAsync = promisify(execFile);
 
 const RUFLO_BIN = "ruflo";
 const OLLAMA_URL = "http://127.0.0.1:11434";
-const OLLAMA_MODEL = "qwen3.5:27b";
+// T0 model (warm in VRAM) — override with HERMES_PLANNER_MODEL env var
+const OLLAMA_MODEL = process.env["HERMES_PLANNER_MODEL"] ?? "dolphin-llama3:8b";
 const MAX_RECURSION_DEPTH = 5;
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -273,6 +274,7 @@ export class HermesPlanner {
     const res = await fetch(`${OLLAMA_URL}/api/generate`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      signal: AbortSignal.timeout(30_000), // 30s — fail fast if model is cold
       body: JSON.stringify({ model: OLLAMA_MODEL, prompt, stream: false }),
     });
 
@@ -281,7 +283,9 @@ export class HermesPlanner {
     }
 
     const data = (await res.json()) as { response: string };
-    const parsed = JSON.parse(data.response) as {
+    // Strip markdown code fences if model wraps JSON in ```json ... ```
+    const raw = data.response.replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/, "").trim();
+    const parsed = JSON.parse(raw) as {
       subGoals: Array<{
         id: string;
         description: string;
