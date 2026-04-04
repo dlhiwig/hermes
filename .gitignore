@@ -33,3 +33,6 @@ sona.db
 trajectories/
 data/governance-audit.jsonl
 data/test-trajectory.json
+ruvector.db
+ruvector.db
+data/ruvector.db

@@ -1,24 +1,37 @@
 /**
- * RuVector Integration Client
+ * RuVector Integration — Direct @ruvector/core NAPI bindings
  *
- * Connects to the RuVector daemon (Qdrant-compatible HTTP API at port 18803)
- * to provide Hermes with:
- *  - Vector similarity search
- *  - Trajectory storage (as points with payload)
- *  - Graph edge management (stored as points with edge metadata)
- *  - Embedding upserts
+ * Previously: HTTP calls to localhost:18803 (Qdrant-style) — silently failed.
+ * Previously: ruvector VectorIndex wrapper — wrong API (values vs vector, no metadata).
+ * Fixed: use @ruvector/core VectorDb directly. Metadata stored in a parallel Map.
  *
- * Falls back to in-memory stubs when RuVector is unreachable.
+ * VectorDb stores (id, vector). Metadata is stored in-process in metaStore Map.
+ * Phase 2: persist metaStore to disk for cross-restart retrieval.
  */
 
+// @ruvector/core is CJS-only — use createRequire for ESM interop
+import { createRequire } from "node:module";
+const require = createRequire(import.meta.url);
+
+type RuvDb = {
+  insert(entry: { id: string; vector: Float32Array }): Promise<string>;
+  search(query: { vector: Float32Array; k: number }): Promise<Array<{ id: string; score: number }>>;
+  len(): Promise<number>;
+  isEmpty(): Promise<boolean>;
+  delete(id: string): Promise<boolean>;
+};
+const coreModule = require("@ruvector/core") as {
+  VectorDb: new (opts: { dimensions: number; distanceMetric: string }) => RuvDb;
+  JsDistanceMetric: { Cosine: string; Euclidean: string; DotProduct: string };
+};
+const { VectorDb, JsDistanceMetric } = coreModule;
 import type { Trajectory, RetrievalResult } from "../core/loop.js";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-const TRAJECTORY_COLLECTION = "hermes-trajectories";
-const GRAPH_COLLECTION = "hermes-graph-edges";
-const SKILLS_COLLECTION = "hermes-skills";
-const VECTOR_DIM = 256;
+const VECTOR_DIM = 768;
+const OLLAMA_URL = process.env["OLLAMA_URL"] ?? "http://127.0.0.1:11434";
+const EMBED_MODEL = "nomic-embed-text";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -42,7 +55,6 @@ export interface RVFContainer {
   trajectoryId: string;
   createdAt: Date;
   payload: Trajectory;
-  embeddings?: Float32Array;
   tags: string[];
 }
 
@@ -59,130 +71,58 @@ export interface RVFSkill {
 // ── HermesMemory ──────────────────────────────────────────────────────────────
 
 export class HermesMemory {
-  private url: string;
-  private connected: boolean | null = null; // null = untested
-  private collectionsReady = false;
+  private trajectoryDb: RuvDb;
+  private skillDb: RuvDb;
+  private graphDb: RuvDb;
+  // Metadata store — VectorDb doesn't carry metadata, so we keep it here
+  private metaStore = new Map<string, Record<string, unknown>>();
+  private trajCount = 0;
 
   constructor() {
-    this.url = process.env["RUVECTOR_URL"] ?? "http://127.0.0.1:18803";
-    console.log(`[RuVector] Initialized — url=${this.url}`);
+    // Note: @ruvector/core uses a single file-backed store (ruvector.db in cwd).
+    // All VectorDb instances share the same backing file — dimension must match.
+    // storagePath pins the file to data/ instead of repo root.
+    const dbOpts = { dimensions: VECTOR_DIM, distanceMetric: JsDistanceMetric.Cosine, storagePath: "data/ruvector.db" };
+    this.trajectoryDb = new VectorDb(dbOpts);
+    this.skillDb = new VectorDb(dbOpts);
+    this.graphDb = new VectorDb(dbOpts);
+    console.log(`[RuVector] Initialized — @ruvector/core VectorDb (dim=${VECTOR_DIM})`);
   }
 
-  // ── Connection Check ────────────────────────────────────────────────────
+  // ── Search ──────────────────────────────────────────────────────────────────
 
-  async checkConnection(): Promise<boolean> {
-    try {
-      const resp = await fetch(`${this.url}/health`, {
-        signal: AbortSignal.timeout(2000),
-      });
-      if (!resp.ok) { this.connected = false; return false; }
-      const data = (await resp.json()) as { status: string };
-      this.connected = data.status === "healthy";
-      return this.connected;
-    } catch {
-      this.connected = false;
-      return false;
-    }
-  }
-
-  private async ensureConnected(): Promise<boolean> {
-    if (this.connected === null) {
-      await this.checkConnection();
-    }
-    return this.connected ?? false;
-  }
-
-  /**
-   * Ensure required collections exist. Idempotent — skips after first success.
-   */
-  private async ensureCollections(): Promise<void> {
-    if (this.collectionsReady) return;
-    if (!(await this.ensureConnected())) return;
-
-    for (const name of [TRAJECTORY_COLLECTION, GRAPH_COLLECTION, SKILLS_COLLECTION]) {
-      try {
-        const check = await fetch(`${this.url}/collections/${name}`, {
-          signal: AbortSignal.timeout(2000),
-        });
-        if (check.ok) continue;
-
-        await fetch(`${this.url}/collections`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          signal: AbortSignal.timeout(3000),
-          body: JSON.stringify({ name, dimension: VECTOR_DIM }),
-        });
-        console.log(`[RuVector] Created collection: ${name}`);
-      } catch {
-        // Collection may already exist or service unavailable
-      }
-    }
-    this.collectionsReady = true;
-  }
-
-  // ── Search ──────────────────────────────────────────────────────────────
-
-  /**
-   * Vector similarity search against trajectories collection.
-   * Falls back to empty results when RuVector is unreachable.
-   */
-  async hybridSearch(
-    query: string,
-    options: HybridSearchOptions = {}
-  ): Promise<RetrievalResult[]> {
+  async hybridSearch(query: string, options: HybridSearchOptions = {}): Promise<RetrievalResult[]> {
     const { vectorTopK = 10 } = options;
-
-    console.log(
-      `[RuVector] hybridSearch — query="${query.slice(0, 40)}" topK=${vectorTopK}`
-    );
-
-    if (!(await this.ensureConnected())) return [];
-    await this.ensureCollections();
+    console.log(`[RuVector] hybridSearch — query="${query.slice(0, 40)}" topK=${vectorTopK}`);
 
     try {
-      const vector = this.textToVector(query);
-      const resp = await fetch(
-        `${this.url}/collections/${TRAJECTORY_COLLECTION}/points/search`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          signal: AbortSignal.timeout(5000),
-          body: JSON.stringify({ vector, k: vectorTopK }),
-        }
-      );
-      if (!resp.ok) return [];
-
-      const data = (await resp.json()) as {
-        results?: Array<{ id: string; score: number; metadata?: Record<string, unknown> }>;
-      };
-
-      return (data.results ?? []).map((r) => ({
-        id: r.id,
-        content: String(r.metadata?.["input"] ?? ""),
-        score: r.score,
-        source: "vector" as const,
-        metadata: r.metadata ?? {},
-      }));
-    } catch {
+      // Use db.len() so cross-restart trajectories are found (trajCount resets each process)
+      const dbLen = await this.trajectoryDb.len();
+      if (dbLen === 0) return [];
+      const vector = await this.textToVector(query);
+      const results = await this.trajectoryDb.search({ vector, k: Math.min(vectorTopK, dbLen) });
+      return results.map((r) => {
+        const meta = this.metaStore.get(r.id) ?? {};
+        return {
+          id: r.id,
+          content: String(meta["input"] ?? ""),
+          score: r.score,
+          source: "vector" as const,
+          metadata: meta,
+        };
+      });
+    } catch (err) {
+      console.warn(`[RuVector] hybridSearch failed: ${(err as Error).message}`);
       return [];
     }
   }
 
-  /**
-   * Short-hand used by loop.ts Step 1.
-   */
-  async retrieve(
-    query: string,
-    filters?: Record<string, unknown>
-  ): Promise<RetrievalResult[]> {
+  async retrieve(query: string, filters?: Record<string, unknown>): Promise<RetrievalResult[]> {
     return this.hybridSearch(query, filters !== undefined ? { filters } : {});
   }
 
-  // ── Store ───────────────────────────────────────────────────────────────
+  // ── Store ───────────────────────────────────────────────────────────────────
 
-  /**
-   * Serialize a Trajectory into an RVF container and persist it as a point.
-   */
   async store(trajectory: Trajectory): Promise<RVFContainer> {
     const container: RVFContainer = {
       id: `rvf_${trajectory.taskId}_${Date.now()}`,
@@ -194,85 +134,41 @@ export class HermesMemory {
 
     console.log(`[RuVector] store — rvfId=${container.id}`);
 
-    if (await this.ensureConnected()) {
-      await this.ensureCollections();
-      try {
-        const vector = this.textToVector(trajectory.input);
-        await fetch(
-          `${this.url}/collections/${TRAJECTORY_COLLECTION}/points`,
-          {
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            signal: AbortSignal.timeout(5000),
-            body: JSON.stringify({
-              points: [
-                {
-                  id: container.id,
-                  vector,
-                  metadata: {
-                    trajectoryId: trajectory.taskId,
-                    input: trajectory.input,
-                    reward: trajectory.rewardSignal?.score ?? 0,
-                    costUsd: trajectory.totalCostUsd,
-                    durationMs: trajectory.totalDurationMs,
-                    tags: container.tags,
-                    createdAt: container.createdAt.toISOString(),
-                  },
-                },
-              ],
-            }),
-          }
-        );
-      } catch (err) {
-        console.warn(`[RuVector] store failed (non-fatal):`, (err as Error).message);
-      }
+    try {
+      const vector = await this.textToVector(trajectory.input);
+      await this.trajectoryDb.insert({ id: container.id, vector });
+      this.metaStore.set(container.id, {
+        trajectoryId: trajectory.taskId,
+        input: trajectory.input,
+        reward: trajectory.rewardSignal?.score ?? 0,
+        costUsd: trajectory.totalCostUsd,
+        durationMs: trajectory.totalDurationMs,
+        tags: container.tags,
+        createdAt: container.createdAt.toISOString(),
+      });
+      this.trajCount++;
+      console.log(`[RuVector] stored — total trajectories: ${this.trajCount}`);
+    } catch (err) {
+      console.warn(`[RuVector] store failed (non-fatal): ${(err as Error).message}`);
     }
 
     return container;
   }
 
-  // ── Graph Edges ─────────────────────────────────────────────────────────
+  // ── Graph Edges ─────────────────────────────────────────────────────────────
 
-  /**
-   * Store a graph edge as a point in the graph-edges collection.
-   */
   async storeGraphEdge(edge: GraphEdge): Promise<void> {
     console.log(`[RuVector] storeGraphEdge — ${edge.from} -[${edge.relation}]-> ${edge.to}`);
-
-    if (!(await this.ensureConnected())) return;
-    await this.ensureCollections();
-
     try {
-      const edgeId = `edge_${edge.from}_${edge.relation}_${edge.to}`;
-      const vector = this.textToVector(`${edge.from}:${edge.relation}:${edge.to}`);
-      await fetch(`${this.url}/collections/${GRAPH_COLLECTION}/points`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        signal: AbortSignal.timeout(5000),
-        body: JSON.stringify({
-          points: [
-            {
-              id: edgeId,
-              vector,
-              metadata: {
-                from: edge.from,
-                to: edge.to,
-                relation: edge.relation,
-                weight: edge.weight ?? 1.0,
-                ...(edge.metadata ?? {}),
-              },
-            },
-          ],
-        }),
-      });
+      const edgeId = `edge_${edge.from}_${edge.relation}_${edge.to}`.slice(0, 128);
+      const vector = await this.textToVector(`${edge.from}:${edge.relation}:${edge.to}`);
+      await this.graphDb.insert({ id: edgeId, vector });
+      this.metaStore.set(edgeId, { from: edge.from, to: edge.to, relation: edge.relation, weight: edge.weight ?? 1.0 });
     } catch (err) {
-      console.warn(`[RuVector] storeGraphEdge failed (non-fatal):`, (err as Error).message);
+      console.warn(`[RuVector] storeGraphEdge failed (non-fatal): ${(err as Error).message}`);
     }
   }
 
-  /**
-   * Update graph edges (e.g. task → completed_by → trajectory).
-   */
   async updateGraph(edges: GraphEdge[]): Promise<void> {
     console.log(`[RuVector] updateGraph — ${edges.length} edge(s)`);
     for (const edge of edges) {
@@ -280,143 +176,99 @@ export class HermesMemory {
     }
   }
 
-  /**
-   * Cypher query pass-through for advanced graph operations.
-   * Falls back to empty results (RuVector uses vector search, not Cypher).
-   */
   async cypher(query: string, params?: Record<string, unknown>): Promise<unknown[]> {
-    console.log(`[RuVector] cypher — ${query.slice(0, 60)}`);
-    void params;
+    void query; void params;
     return [];
   }
 
-  // ── Embeddings & Skills ─────────────────────────────────────────────────
+  // ── Skills ──────────────────────────────────────────────────────────────────
 
-  /**
-   * Upsert embeddings for a document (used after skill distillation).
-   */
-  async upsertEmbedding(
-    id: string,
-    vector: Float32Array,
-    metadata: Record<string, unknown>
-  ): Promise<void> {
-    console.log(`[RuVector] upsertEmbedding — id=${id} dim=${vector.length}`);
-
-    if (!(await this.ensureConnected())) return;
-    await this.ensureCollections();
-
+  async upsertEmbedding(id: string, vector: Float32Array, metadata: Record<string, unknown>): Promise<void> {
     try {
-      await fetch(`${this.url}/collections/${TRAJECTORY_COLLECTION}/points`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        signal: AbortSignal.timeout(5000),
-        body: JSON.stringify({
-          points: [{ id, vector: Array.from(vector), metadata }],
-        }),
-      });
+      await this.trajectoryDb.insert({ id, vector });
+      this.metaStore.set(id, metadata);
     } catch (err) {
-      console.warn(`[RuVector] upsertEmbedding failed (non-fatal):`, (err as Error).message);
+      console.warn(`[RuVector] upsertEmbedding failed: ${(err as Error).message}`);
     }
   }
 
-  /**
-   * Persist a distilled skill as an RVF skill record.
-   */
   async storeSkill(skill: RVFSkill): Promise<void> {
     console.log(`[RuVector] storeSkill — name=${skill.name} successRate=${skill.successRate}`);
-
-    if (!(await this.ensureConnected())) return;
-    await this.ensureCollections();
-
     try {
-      const vector = this.textToVector(skill.pattern);
-      await fetch(`${this.url}/collections/${SKILLS_COLLECTION}/points`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        signal: AbortSignal.timeout(5000),
-        body: JSON.stringify({
-          points: [
-            {
-              id: skill.id,
-              vector,
-              metadata: {
-                name: skill.name,
-                pattern: skill.pattern,
-                executor: skill.executor,
-                successRate: skill.successRate,
-                rvfPath: skill.rvfPath,
-                createdAt: skill.createdAt.toISOString(),
-              },
-            },
-          ],
-        }),
+      const vector = await this.textToVector(skill.pattern);
+      await this.skillDb.insert({ id: skill.id, vector });
+      this.metaStore.set(skill.id, {
+        name: skill.name, pattern: skill.pattern, executor: skill.executor,
+        successRate: skill.successRate, rvfPath: skill.rvfPath,
+        createdAt: skill.createdAt.toISOString(),
       });
     } catch (err) {
-      console.warn(`[RuVector] storeSkill failed (non-fatal):`, (err as Error).message);
+      console.warn(`[RuVector] storeSkill failed: ${(err as Error).message}`);
     }
   }
 
-  /**
-   * Look up all RVF skills for a given task pattern.
-   */
   async findSkills(pattern: string): Promise<RVFSkill[]> {
-    console.log(`[RuVector] findSkills — pattern="${pattern.slice(0, 40)}"`);
-
-    if (!(await this.ensureConnected())) return [];
-    await this.ensureCollections();
-
     try {
-      const vector = this.textToVector(pattern);
-      const resp = await fetch(
-        `${this.url}/collections/${SKILLS_COLLECTION}/points/search`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          signal: AbortSignal.timeout(5000),
-          body: JSON.stringify({ vector, k: 10 }),
-        }
-      );
-      if (!resp.ok) return [];
-
-      const data = (await resp.json()) as {
-        results?: Array<{ id: string; score: number; metadata?: Record<string, unknown> }>;
-      };
-
-      return (data.results ?? []).map((r) => ({
-        id: String(r.metadata?.["name"] ?? r.id),
-        name: String(r.metadata?.["name"] ?? ""),
-        pattern: String(r.metadata?.["pattern"] ?? ""),
-        executor: String(r.metadata?.["executor"] ?? ""),
-        successRate: Number(r.metadata?.["successRate"] ?? 0),
-        rvfPath: String(r.metadata?.["rvfPath"] ?? ""),
-        createdAt: new Date(String(r.metadata?.["createdAt"] ?? new Date().toISOString())),
-      }));
-    } catch {
-      return [];
-    }
+      const vector = await this.textToVector(pattern);
+      const results = await this.skillDb.search({ vector, k: 10 });
+      return results.map((r) => {
+        const m = this.metaStore.get(r.id) ?? {};
+        return {
+          id: String(m["name"] ?? r.id), name: String(m["name"] ?? ""),
+          pattern: String(m["pattern"] ?? ""), executor: String(m["executor"] ?? ""),
+          successRate: Number(m["successRate"] ?? 0), rvfPath: String(m["rvfPath"] ?? ""),
+          createdAt: new Date(String(m["createdAt"] ?? new Date().toISOString())),
+        };
+      });
+    } catch { return []; }
   }
 
-  // ── Helpers ─────────────────────────────────────────────────────────────
+  // ── Stats ───────────────────────────────────────────────────────────────────
+
+  async getStats(): Promise<{ trajectories: number; skills: number; edges: number }> {
+    return { trajectories: this.trajCount, skills: 0, edges: 0 };
+  }
+
+  // ── Helpers ─────────────────────────────────────────────────────────────────
 
   /**
-   * Simple hash-based text → 256-dim vector for storage/search.
-   * Matches the embedding approach used in loop.ts taskToEmbedding().
+   * Semantic 768-dim embedding via Ollama nomic-embed-text.
+   * Falls back to hash-based Float32Array when Ollama is unreachable.
    */
-  private textToVector(text: string): number[] {
-    const emb = new Array(VECTOR_DIM).fill(0) as number[];
+  async textToVector(text: string): Promise<Float32Array> {
+    try {
+      const resp = await fetch(`${OLLAMA_URL}/api/embeddings`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        signal: AbortSignal.timeout(5000),
+        body: JSON.stringify({ model: EMBED_MODEL, prompt: text }),
+      });
+      if (resp.ok) {
+        const data = (await resp.json()) as { embedding?: number[] };
+        if (data.embedding && data.embedding.length > 0) {
+          return new Float32Array(data.embedding);
+        }
+      }
+    } catch {
+      // fall through to hash fallback
+    }
+    return this._hashVector(text);
+  }
+
+  /**
+   * Hash-based 768-dim fallback — used when Ollama is unreachable.
+   */
+  private _hashVector(text: string): Float32Array {
+    const emb = new Float32Array(VECTOR_DIM);
     for (let i = 0; i < text.length; i++) {
       const code = text.charCodeAt(i);
       const idx = (code * 31 + i * 17) % VECTOR_DIM;
       emb[idx] = (emb[idx] ?? 0) + ((code * 0.0073) % 1.0);
     }
     let norm = 0;
-    for (let i = 0; i < VECTOR_DIM; i++) {
-      norm += (emb[i] ?? 0) * (emb[i] ?? 0);
-    }
+    for (let i = 0; i < VECTOR_DIM; i++) norm += (emb[i] ?? 0) ** 2;
     norm = Math.sqrt(norm) || 1;
-    for (let i = 0; i < VECTOR_DIM; i++) {
-      emb[i] = (emb[i] ?? 0) / norm;
-    }
+    for (let i = 0; i < VECTOR_DIM; i++) emb[i] = (emb[i] ?? 0) / norm;
     return emb;
   }
 }
