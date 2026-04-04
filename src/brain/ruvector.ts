@@ -153,15 +153,15 @@ export class HermesMemory {
       if (!resp.ok) return [];
 
       const data = (await resp.json()) as {
-        results?: Array<{ id: string; score: number; payload?: Record<string, unknown> }>;
+        results?: Array<{ id: string; score: number; metadata?: Record<string, unknown> }>;
       };
 
       return (data.results ?? []).map((r) => ({
         id: r.id,
-        content: String(r.payload?.["input"] ?? ""),
+        content: String(r.metadata?.["input"] ?? ""),
         score: r.score,
         source: "vector" as const,
-        metadata: r.payload ?? {},
+        metadata: r.metadata ?? {},
       }));
     } catch {
       return [];
@@ -201,7 +201,7 @@ export class HermesMemory {
         await fetch(
           `${this.url}/collections/${TRAJECTORY_COLLECTION}/points`,
           {
-            method: "POST",
+            method: "PUT",
             headers: { "Content-Type": "application/json" },
             signal: AbortSignal.timeout(5000),
             body: JSON.stringify({
@@ -209,7 +209,7 @@ export class HermesMemory {
                 {
                   id: container.id,
                   vector,
-                  payload: {
+                  metadata: {
                     trajectoryId: trajectory.taskId,
                     input: trajectory.input,
                     reward: trajectory.rewardSignal?.score ?? 0,
@@ -246,7 +246,7 @@ export class HermesMemory {
       const edgeId = `edge_${edge.from}_${edge.relation}_${edge.to}`;
       const vector = this.textToVector(`${edge.from}:${edge.relation}:${edge.to}`);
       await fetch(`${this.url}/collections/${GRAPH_COLLECTION}/points`, {
-        method: "POST",
+        method: "PUT",
         headers: { "Content-Type": "application/json" },
         signal: AbortSignal.timeout(5000),
         body: JSON.stringify({
@@ -254,7 +254,7 @@ export class HermesMemory {
             {
               id: edgeId,
               vector,
-              payload: {
+              metadata: {
                 from: edge.from,
                 to: edge.to,
                 relation: edge.relation,
@@ -307,11 +307,11 @@ export class HermesMemory {
 
     try {
       await fetch(`${this.url}/collections/${TRAJECTORY_COLLECTION}/points`, {
-        method: "POST",
+        method: "PUT",
         headers: { "Content-Type": "application/json" },
         signal: AbortSignal.timeout(5000),
         body: JSON.stringify({
-          points: [{ id, vector: Array.from(vector), payload: metadata }],
+          points: [{ id, vector: Array.from(vector), metadata }],
         }),
       });
     } catch (err) {
@@ -331,7 +331,7 @@ export class HermesMemory {
     try {
       const vector = this.textToVector(skill.pattern);
       await fetch(`${this.url}/collections/${SKILLS_COLLECTION}/points`, {
-        method: "POST",
+        method: "PUT",
         headers: { "Content-Type": "application/json" },
         signal: AbortSignal.timeout(5000),
         body: JSON.stringify({
@@ -339,7 +339,7 @@ export class HermesMemory {
             {
               id: skill.id,
               vector,
-              payload: {
+              metadata: {
                 name: skill.name,
                 pattern: skill.pattern,
                 executor: skill.executor,
@@ -383,13 +383,13 @@ export class HermesMemory {
       };
 
       return (data.results ?? []).map((r) => ({
-        id: String(r.payload?.["name"] ?? r.id),
-        name: String(r.payload?.["name"] ?? ""),
-        pattern: String(r.payload?.["pattern"] ?? ""),
-        executor: String(r.payload?.["executor"] ?? ""),
-        successRate: Number(r.payload?.["successRate"] ?? 0),
-        rvfPath: String(r.payload?.["rvfPath"] ?? ""),
-        createdAt: new Date(String(r.payload?.["createdAt"] ?? new Date().toISOString())),
+        id: String(r.metadata?.["name"] ?? r.id),
+        name: String(r.metadata?.["name"] ?? ""),
+        pattern: String(r.metadata?.["pattern"] ?? ""),
+        executor: String(r.metadata?.["executor"] ?? ""),
+        successRate: Number(r.metadata?.["successRate"] ?? 0),
+        rvfPath: String(r.metadata?.["rvfPath"] ?? ""),
+        createdAt: new Date(String(r.metadata?.["createdAt"] ?? new Date().toISOString())),
       }));
     } catch {
       return [];
