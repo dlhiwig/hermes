@@ -12,6 +12,10 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "http";
 import type { Trajectory, RewardSignal, HermesTask, HermesPlan, RoutingRecommendation } from "../core/loop.js";
 import { EWCPlusPlus } from "./ewc.js";
+import { createRequire } from "module";
+const _require = createRequire(import.meta.url);
+// eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+const { SonaEngine } = _require("@ruvector/sona") as { SonaEngine: new (dim: number) => import("@ruvector/sona").SonaEngine };
 
 const SONA_PORT = parseInt(process.env["SONA_PORT"] ?? "18805", 10);
 const SONA_OPTIMIZE_INTERVAL_MS = 5_000; // every 5 seconds
@@ -67,6 +71,7 @@ export class SonaDaemon {
   private flushTimer: NodeJS.Timeout | null = null;
   private ewcFlushTimer: NodeJS.Timeout | null = null;
   private ewc: EWCPlusPlus;
+  private sonaEngine: import("@ruvector/sona").SonaEngine;
 
   constructor() {
     this.port = SONA_PORT;
@@ -74,6 +79,8 @@ export class SonaDaemon {
     this.trajectoryQueue = [];
     this.ewcSteps = [];
     this.ewc = new EWCPlusPlus({ lambda: 0.4, importanceDecay: 0.95 });
+    this.sonaEngine = new SonaEngine(256);
+    console.log("[SONA] SonaEngine (Rust/WASM) initialized — dim=256");
 
     this.routingTable = {
       version: 0,
@@ -207,11 +214,15 @@ export class SonaDaemon {
     ]);
     this.ewc.applyMicroLora(gradients, reward.score);
 
-    // TODO: POST to SONA HTTP API or call @ruvector/sona directly
-    // await fetch(`http://localhost:${this.port}/trajectory`, {
-    //   method: "POST",
-    //   body: JSON.stringify(record),
-    // });
+    // Wire to @ruvector/sona SonaEngine — beginTrajectory/endTrajectory with hash embedding
+    try {
+      const embedding = this._textToEmbedding(trajectory.input);
+      const trajId = this.sonaEngine.beginTrajectory(embedding);
+      this.sonaEngine.addTrajectoryStep(trajId, embedding, [], reward.score);
+      this.sonaEngine.endTrajectory(trajId, reward.score);
+    } catch (err) {
+      console.warn("[SONA] sonaEngine trajectory failed (non-fatal):", (err as Error).message);
+    }
 
     console.log(
       `[SONA] recordTrajectory — id=${trajectory.taskId} score=${reward.score.toFixed(3)} buffer=${this.trajectoryBuffer.length}`
@@ -227,14 +238,19 @@ export class SonaDaemon {
 
     console.log(`[SONA] optimizeRouter — buffer=${this.trajectoryBuffer.length}`);
 
-    // TODO: Call @ruvector/sona optimize() with buffer
-    // const result = await sona.optimize({
-    //   trajectories: this.trajectoryBuffer,
-    //   hyperparams: this.hyperparams,
-    //   algorithm: "PPO",
-    // });
-    // this.routingTable = result.routingTable;
-    // this.hyperparams = result.updatedHyperparams;
+    // Wire to @ruvector/sona: tick + applyMicroLora for routing optimization
+    try {
+      this.sonaEngine.tick();
+      const avgReward = this.trajectoryBuffer.reduce((sum, t) => sum + t.rewardSignal.score, 0)
+        / this.trajectoryBuffer.length;
+      // applyMicroLora takes a 256-dim vector — use embedding of "routing optimization"
+      const routingEmb = this._textToEmbedding(`routing optimization reward=${avgReward.toFixed(3)}`);
+      this.sonaEngine.applyMicroLora(routingEmb);
+      const stats = this.sonaEngine.getStats();
+      console.log(`[SONA] optimizeRouter — sonaStats=${JSON.stringify(stats)}`);
+    } catch (err) {
+      console.warn("[SONA] sonaEngine optimize failed (non-fatal):", (err as Error).message);
+    }
 
     // Flush buffer after optimization
     this.trajectoryBuffer = [];
@@ -311,6 +327,26 @@ export class SonaDaemon {
    */
   applyGovernancePenalty(paramId: string, negativeReward: number): void {
     this.ewc.applyGovernancePenalty(paramId, negativeReward);
+  }
+
+  // ── Embedding Helper ──────────────────────────────────────────────────
+
+  /**
+   * Hash-based 256-dim embedding — matches ruvector.ts and ledger.ts.
+   * Not semantically meaningful but consistent across the pipeline.
+   */
+  private _textToEmbedding(text: string): number[] {
+    const dim = 256;
+    const emb = new Array(dim).fill(0) as number[];
+    for (let i = 0; i < text.length; i++) {
+      const code = text.charCodeAt(i);
+      const idx = (code * 31 + i * 17) % dim;
+      emb[idx] = (emb[idx] ?? 0) + ((code * 0.0073) % 1.0);
+    }
+    let norm = 0;
+    for (const v of emb) norm += (v ?? 0) * (v ?? 0);
+    norm = Math.sqrt(norm) || 1;
+    return emb.map((v) => (v ?? 0) / norm);
   }
 
   // ── Queue & Flush ──────────────────────────────────────────────────────

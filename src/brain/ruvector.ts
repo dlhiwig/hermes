@@ -379,7 +379,7 @@ export class HermesMemory {
       if (!resp.ok) return [];
 
       const data = (await resp.json()) as {
-        results?: Array<{ id: string; score: number; payload?: Record<string, unknown> }>;
+        results?: Array<{ id: string; score: number; metadata?: Record<string, unknown> }>;
       };
 
       return (data.results ?? []).map((r) => ({
